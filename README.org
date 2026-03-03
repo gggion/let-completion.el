@@ -14,7 +14,7 @@ removes it when disabled.
 
 ** Screenshots
 
-[[https://github.com/gggion/let-completion/blob/screenshots/showcase.gif?raw=true]]
+[[https://github.com/gggion/let-completion.el/blob/screenshots/showcase.gif?raw=true]]
 
 ** Configuration
 
