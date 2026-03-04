@@ -60,6 +60,11 @@
   :group 'lisp
   :prefix "let-completion-")
 
+(defcustom let-completion-annotation-format " [%s]"
+  "The format string for inline annotation."
+  :type 'string
+  :group 'let-completion)
+
 (defcustom let-completion-inline-max-width 5
   "Max printed width for inline value annotation, or nil to disable.
 Only binding values whose `prin1-to-string' form fits within this
@@ -238,13 +243,14 @@ Installed as `:around' advice on `elisp-completion-at-point' by
                          (lambda (c)
                            (let ((cell (assoc c vals)))
                              (if cell
-                                 (let ((short (and let-completion-inline-max-width
-                                                   (prin1-to-string (cdr cell)))))
-                                   (if (and short
-                                            (<= (length short)
-                                                let-completion-inline-max-width))
-                                       (concat " [" short "]")
-                                     " [local]"))
+                                 (let* ((short (and let-completion-inline-max-width
+                                                   (prin1-to-string (cdr cell))))
+                                        (short (if (and short
+                                                        (<= (length short)
+                                                            let-completion-inline-max-width))
+                                                   short
+                                                 "local")))
+                                   (format let-completion-annotation-format short))
                                (when orig-ann (funcall orig-ann c)))))
                          :company-doc-buffer
                          (lambda (c)
