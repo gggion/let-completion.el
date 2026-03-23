@@ -182,12 +182,16 @@ Return SPEC or nil."
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'dlet
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+(let-completion-register-binding-form 'letrec
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'cl-do
   '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
 (let-completion-register-binding-form 'cl-do*
   '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
 (let-completion-register-binding-form 'cl-symbol-macrolet
   '(:bindings-index 1 :binding-shape list :scope body :tag "symm"))
+(let-completion-register-binding-form 'with-slots
+  '(:bindings-index 1 :binding-shape list :scope body :tag "slot"))
 
 ;; Index 1, then scope.
 (let-completion-register-binding-form 'if-let
@@ -208,8 +212,10 @@ Return SPEC or nil."
   '(:bindings-index 1 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'cl-multiple-value-bind
   '(:bindings-index 1 :binding-shape arglist :scope body :tag "mv"))
-(let-completion-register-binding-form 'with-slots
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "slot"))
+(let-completion-register-binding-form 'cl-with-gensyms
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "sym"))
+(let-completion-register-binding-form 'cl-once-only
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "sym"))
 
 ;; Index 2, body scope.
 (let-completion-register-binding-form 'defun
@@ -245,13 +251,23 @@ Return SPEC or nil."
   '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
 (let-completion-register-binding-form 'cl-do-all-symbols
   '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+(let-completion-register-binding-form 'dolist-with-progress-reporter
+  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+(let-completion-register-binding-form 'dotimes-with-progress-reporter
+  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
 
-;;;;;; error-var shape: bare symbol, visible in handlers only
+;;;;;; error-var shape: bare symbol
 
 (let-completion-register-binding-form 'condition-case
   '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
 (let-completion-register-binding-form 'condition-case-unless-debug
   '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
+(let-completion-register-binding-form 'ert-with-temp-file
+  '(:bindings-index 1 :binding-shape error-var :scope body :tag "file"))
+(let-completion-register-binding-form 'ert-with-temp-directory
+  '(:bindings-index 1 :binding-shape error-var :scope body :tag "dir"))
+(let-completion-register-binding-form 'ert-with-message-capture
+  '(:bindings-index 1 :binding-shape error-var :scope body :tag "msg"))
 ;;;; Scope Checking
 
 (defun let-completion--scope-visible-p
