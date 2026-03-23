@@ -57,7 +57,7 @@
   :group 'lisp
   :prefix "let-completion-")
 
-(defcustom let-completion-annotation-format " [%s]"
+(defcustom let-completion-annotation-format " %s"
   "The format string for inline annotation.
 Receives one string argument: either the printed value or \"local\"."
   :type 'string)
