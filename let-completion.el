@@ -58,8 +58,33 @@
   :prefix "let-completion-")
 
 (defcustom let-completion-annotation-format " %s"
-  "The format string for inline annotation.
-Receives one string argument: either the printed value or \"local\"."
+  "Format string for inline value annotation.
+Receives one string argument: the printed binding value or the
+fallback label from `let-completion-annotation-fallback'.
+
+Also see `let-completion-annotation-format-tag' and
+`let-completion-inline-max-width'."
+  :type 'string)
+
+(defcustom let-completion-annotation-format-tag " [%s]"
+  "Format string for tag annotation.
+Receives one string argument: the tag label (e.g. \"&optional\",
+\"fn\", \"let\").  The tag annotation precedes the value annotation
+when both are present.
+
+Set to nil to disable tag annotations entirely and fall back to
+value-only display as in version 0.1.
+
+Also see `let-completion-annotation-format'."
+  :type '(choice string (const :tag "Disable" nil)))
+
+(defcustom let-completion-annotation-fallback "local"
+  "Label shown when binding value is absent or too wide to display.
+Used when `let-completion-inline-max-width' is exceeded or value
+is nil, and tag annotations are disabled.
+
+Also see `let-completion-annotation-format' and
+`let-completion-annotation-format-tag'."
   :type 'string)
 
 (defcustom let-completion-inline-max-width 5
@@ -84,13 +109,14 @@ Set by major mode hooks for non-Elisp Lisp dialects.")
 (defun let-completion-register-binding-form (symbol spec)
   "Register SYMBOL as a binding form with descriptor SPEC.
 SPEC is either a plist with keys `:bindings-index', `:binding-shape',
-and `:scope', or a function receiving (POS COMPLETION-POS) and
-returning an alist of (NAME-STRING . VALUE-OR-NIL).
+`:scope', and `:tag', or a function receiving (POS COMPLETION-POS)
+and returning an alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL).
 
 `:bindings-index' is the 1-based position of the binding sexp
 after the head symbol.  `:binding-shape' is one of `list',
 `arglist', `single', `error-var'.  `:scope' is one of `body',
-`then', `handlers'.
+`then', `handlers'.  `:tag' is a string label for annotation
+display (e.g. \"let\", \"arg\", \"var\", \"err\").
 
 Store SPEC as symbol property `let-completion--binding-form'.
 Buffer-local overrides via `let-completion-binding-forms' take
@@ -113,41 +139,41 @@ Return SPEC or nil."
 
 ;; let-family: binding list at index 1, list shape.
 (let-completion-register-binding-form 'let
-  '(:bindings-index 1 :binding-shape list :scope body))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'let*
-  '(:bindings-index 1 :binding-shape list :scope body))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'when-let*
-  '(:bindings-index 1 :binding-shape list :scope body))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'if-let
-  '(:bindings-index 1 :binding-shape list :scope then))
+  '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
 (let-completion-register-binding-form 'if-let*
-  '(:bindings-index 1 :binding-shape list :scope then))
+  '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
 (let-completion-register-binding-form 'and-let*
-  '(:bindings-index 1 :binding-shape list :scope body))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 
 ;; Definitions: arglist at index 2.
 (let-completion-register-binding-form 'defun
-  '(:bindings-index 2 :binding-shape arglist :scope body))
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'defmacro
-  '(:bindings-index 2 :binding-shape arglist :scope body))
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'defsubst
-  '(:bindings-index 2 :binding-shape arglist :scope body))
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'cl-defun
-  '(:bindings-index 2 :binding-shape arglist :scope body))
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 
 ;; Lambda: arglist at index 1.
 (let-completion-register-binding-form 'lambda
-  '(:bindings-index 1 :binding-shape arglist :scope body))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "arg"))
 
 ;; Iteration: single binding at index 1.
 (let-completion-register-binding-form 'dolist
-  '(:bindings-index 1 :binding-shape single :scope body))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
 (let-completion-register-binding-form 'dotimes
-  '(:bindings-index 1 :binding-shape single :scope body))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
 
 ;; Error handling: bare symbol at index 1, visible in handlers only.
 (let-completion-register-binding-form 'condition-case
-  '(:bindings-index 1 :binding-shape error-var :scope handlers))
+  '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
 
 ;;;; Scope Checking
 
@@ -187,28 +213,35 @@ Called by `let-completion--extract-by-spec'."
 
 ;;;; Shape Extractors
 
-(defun let-completion--extract-shape (shape start end completion-pos)
+(defun let-completion--extract-shape (shape start end completion-pos tag)
   "Dispatch extraction on SHAPE between START and END.
 COMPLETION-POS is used to skip bindings that contain point.
+TAG is the base tag string from the registry descriptor.
 SHAPE is one of `list', `arglist', `single', `error-var'.
 
-Return alist of (NAME-STRING . VALUE-OR-NIL).
+Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL).
 
 Called by `let-completion--extract-by-spec'."
   (pcase shape
-    ('list     (let-completion--extract-shape-list start end completion-pos))
-    ('arglist  (let-completion--extract-shape-arglist start end completion-pos))
-    ('single   (let-completion--extract-shape-single start end completion-pos))
-    ('error-var (let-completion--extract-shape-error-var start end completion-pos))))
+    ('list     (let-completion--extract-shape-list
+                start end completion-pos tag))
+    ('arglist  (let-completion--extract-shape-arglist
+                start end completion-pos tag))
+    ('single   (let-completion--extract-shape-single
+                start end completion-pos tag))
+    ('error-var (let-completion--extract-shape-error-var
+                 start end completion-pos tag))))
 
-(defun let-completion--extract-shape-list (start end completion-pos)
+(defun let-completion--extract-shape-list (start end completion-pos tag)
   "Extract bindings from a list-shaped form between START and END.
 Handle ((VAR EXPR) ...) and bare (VAR ...) entries.
+TAG is the base tag string from the registry descriptor.
 Skip any binding whose span contains COMPLETION-POS.
 
-Return alist of (NAME-STRING . VALUE-OR-NIL).
+Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL).
 
-Used for `let', `let*', `when-let*', `if-let*', `and-let*'."
+Used for `let', `let*', `when-let*', `if-let*', `and-let*', `dlet'.
+Called by `let-completion--extract-shape'."
   (save-excursion
     (goto-char (1+ start))
     (let (result)
@@ -219,48 +252,57 @@ Used for `let', `let*', `when-let*', `if-let*', `and-let*'."
               (let ((b-end (scan-sexps (point) 1)))
                 (if (<= b-start completion-pos b-end)
                     (goto-char b-end)
-                  (let ((text (buffer-substring-no-properties
-                               b-start b-end)))
-                    (condition-case nil
-                        (let ((sexp (car (read-from-string text))))
-                          (cond
-                           ((consp sexp)
-                            (push (cons (symbol-name (car sexp))
-                                        (cadr sexp))
-                                  result))
-                           ((symbolp sexp)
-                            (push (cons (symbol-name sexp) nil) result))))
-                      ;; `read' failed — extract name only via scan-sexps.
-                      (error
-                       (save-excursion
-                         (goto-char b-start)
-                         (when (eq (char-after) ?\()
-                           (forward-char 1))
-                         (skip-chars-forward " \t\n")
-                         (let ((name-end (ignore-errors
-                                           (scan-sexps (point) 1))))
-                           (when name-end
-                             (push (cons (buffer-substring-no-properties
-                                          (point) name-end)
-                                         nil)
-                                   result)))))))
+                  (cond
+                   ;; (VAR EXPR) -- compound binding.
+                   ((eq (char-after b-start) ?\()
+                    (save-excursion
+                      (goto-char (1+ b-start))
+                      (skip-chars-forward " \t\n")
+                      (let ((name-start (point))
+                            (name-end (ignore-errors
+                                        (scan-sexps (point) 1))))
+                        (when name-end
+                          (let* ((name (buffer-substring-no-properties
+                                        name-start name-end))
+                                 (value
+                                  (condition-case nil
+                                      (progn
+                                        (goto-char name-end)
+                                        (skip-chars-forward " \t\n")
+                                        (when (< (point) (1- b-end))
+                                          (let ((vs (point))
+                                                (ve (scan-sexps (point) 1)))
+                                            (car (read-from-string
+                                                  (buffer-substring-no-properties
+                                                   vs ve))))))
+                                    (error nil))))
+                            (push (cons name (cons tag value)) result))))))
+                   ;; Bare symbol.
+                   (t
+                    (let ((name (buffer-substring-no-properties
+                                 b-start b-end)))
+                      (push (cons name (cons tag nil)) result))))
                   (goto-char b-end)))
-            ;; scan-sexps failed — bail out of the loop.
+            ;; scan-sexps failed -- bail out.
             (error (goto-char end)))))
       result)))
 
-(defun let-completion--extract-shape-arglist (start end completion-pos)
+(defun let-completion--extract-shape-arglist (start end completion-pos tag)
   "Extract parameter names from an arglist between START and END.
-Skip lambda-list keywords (&optional, &rest, &key, etc.) and
-destructuring sublists.  All values are nil.
+Skip lambda-list keywords and destructuring sublists.
+Track the current lambda-list keyword to refine TAG per parameter.
+TAG is the base tag string from the registry descriptor, used for
+required parameters.  Lambda-list keywords override it.
 Skip any name whose span contains COMPLETION-POS.
 
-Return alist of (NAME-STRING . nil).
+Return alist of (NAME-STRING TAG-STRING . nil).
 
-Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda'."
+Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda'.
+Called by `let-completion--extract-shape'."
   (save-excursion
     (goto-char (1+ start))
-    (let (result)
+    (let (result
+          (current-tag tag))
       (while (progn (skip-chars-forward " \t\n")
                     (< (point) (1- end)))
         (let ((sym-start (point)))
@@ -270,52 +312,71 @@ Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda'."
                     (goto-char sym-end)
                   (let ((name (buffer-substring-no-properties
                                sym-start sym-end)))
-                    (unless (or (string-prefix-p "&" name)
-                                (eq (char-after sym-start) ?\())
-                      (push (cons name nil) result)))
+                    (cond
+                     ;; Lambda-list keyword -- update tag, do not collect.
+                     ((string-prefix-p "&" name)
+                      (setq current-tag name))
+                     ;; Destructuring sublist -- skip.
+                     ((eq (char-after sym-start) ?\())
+                     ;; Parameter name -- collect with current tag.
+                     (t
+                      (push (cons name (cons current-tag nil)) result))))
                   (goto-char sym-end)))
             (error (goto-char end)))))
       result)))
 
-(defun let-completion--extract-shape-single (start end completion-pos)
+(defun let-completion--extract-shape-single (start end completion-pos tag)
   "Extract one binding from a (VAR EXPR) form between START and END.
+TAG is the base tag string from the registry descriptor.
 Skip if span contains COMPLETION-POS.
 
-Return one-element alist or nil.
+Name is extracted via `scan-sexps'.  Value is attempted via `read'
+with silent fallback to nil.
 
-Used for `dolist', `dotimes'."
+Return one-element alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL)
+or nil.
+
+Used for `dolist', `dotimes'.
+Called by `let-completion--extract-shape'."
   (if (<= start completion-pos end)
       nil
     (save-excursion
-      (let ((text (buffer-substring-no-properties start end)))
-        (condition-case nil
-            (let ((sexp (car (read-from-string text))))
-              (when (and (consp sexp) (symbolp (car sexp)))
-                (list (cons (symbol-name (car sexp))
-                            (cadr sexp)))))
-          ;; `read' failed — extract name only.
-          (error
-           (goto-char (1+ start))
-           (skip-chars-forward " \t\n")
-           (let ((name-end (ignore-errors (scan-sexps (point) 1))))
-             (when name-end
-               (list (cons (buffer-substring-no-properties
-                            (point) name-end)
-                           nil))))))))))
+      (goto-char (1+ start))
+      (skip-chars-forward " \t\n")
+      (let ((name-start (point))
+            (name-end (ignore-errors (scan-sexps (point) 1))))
+        (when name-end
+          (let* ((name (buffer-substring-no-properties
+                        name-start name-end))
+                 (value (condition-case nil
+                            (progn
+                              (goto-char name-end)
+                              (skip-chars-forward " \t\n")
+                              (when (< (point) (1- end))
+                                (let ((vs (point))
+                                      (ve (scan-sexps (point) 1)))
+                                  (car (read-from-string
+                                        (buffer-substring-no-properties
+                                         vs ve))))))
+                          ;; if `read' failed, return nil
+                          (error nil))))
+            (list (cons name (cons tag value)))))))))
 
-(defun let-completion--extract-shape-error-var (start end completion-pos)
+(defun let-completion--extract-shape-error-var (start end completion-pos tag)
   "Extract one name from a bare symbol between START and END.
+TAG is the base tag string from the registry descriptor.
 Skip if span contains COMPLETION-POS.
 
-Return one-element alist or nil.
+Return one-element alist of (NAME-STRING TAG-STRING . nil) or nil.
 
-Used for `condition-case'."
+Used for `condition-case'.
+Called by `let-completion--extract-shape'."
   (if (<= start completion-pos end)
       nil
     (let ((name (string-trim
                  (buffer-substring-no-properties start end))))
       (unless (or (string-empty-p name) (string= name "nil"))
-        (list (cons name nil))))))
+        (list (cons name (cons tag nil)))))))
 
 ;;;; Dispatcher
 
@@ -353,16 +414,18 @@ COMPLETION-POS is where point is.
 SPEC is the registry descriptor plist.
 
 Navigate to the sexp at `:bindings-index', check `:scope' against
-COMPLETION-POS, dispatch on `:binding-shape'.
+COMPLETION-POS, dispatch on `:binding-shape' with `:tag' as
+the base tag string.
 
-Return alist of (NAME-STRING . VALUE-OR-NIL) or nil.
+Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
 
 Called by `let-completion--extract-bindings-at'."
   (save-excursion
     (goto-char head-end)
     (let ((idx (plist-get spec :bindings-index))
           (shape (plist-get spec :binding-shape))
-          (scope (plist-get spec :scope)))
+          (scope (plist-get spec :scope))
+          (tag (plist-get spec :tag)))
       ;; Navigate forward to the binding sexp.
       ;; idx 1 means the next sexp after head, idx 2 means skip one more.
       (condition-case nil
@@ -377,7 +440,7 @@ Called by `let-completion--extract-bindings-at'."
                    (let-completion--scope-visible-p
                     pos bindings-end completion-pos scope))
           (let-completion--extract-shape
-           shape bindings-start bindings-end completion-pos))))))
+           shape bindings-start bindings-end completion-pos tag))))))
 
 ;;;; Top-Level Binding Walker
 
@@ -456,10 +519,11 @@ Called by `let-completion--advice'."
 Wrap the completion table to merge extracted local names into the
 candidate pool and inject `display-sort-function' into the table's
 metadata response, promoting locals to the top.  Inject
-`:annotation-function' to show values or [local] tags, and
-`:company-doc-buffer' to provide full pretty-printed values.
-Both fall back to the original plist functions for non-local
-candidates.
+`:annotation-function' to show tags and values per
+`let-completion-annotation-format', `let-completion-annotation-format-tag',
+and `let-completion-annotation-fallback'.  Inject `:company-doc-buffer'
+to provide full pretty-printed values.  Both fall back to the
+original plist functions for non-local candidates.
 
 Installed as `:around' advice on `elisp-completion-at-point' by
 `let-completion-mode'.  Removed by disabling the mode."
@@ -489,31 +553,52 @@ Installed as `:around' advice on `elisp-completion-at-point' by
                          (lambda (c)
                            (let ((cell (assoc c vals)))
                              (if cell
-                                 (let* ((short (and let-completion-inline-max-width
-                                                    (prin1-to-string (cdr cell))))
-                                        (short (if (and short
-                                                        (<= (length short)
-                                                            let-completion-inline-max-width))
-                                                   short
-                                                 "local")))
-                                   (format let-completion-annotation-format short))
+                                 (let* ((tag (cadr cell))
+                                        (val (cddr cell))
+                                        (short
+                                         (and let-completion-inline-max-width
+                                              val
+                                              (let ((s (prin1-to-string val)))
+                                                (and (<= (length s)
+                                                         let-completion-inline-max-width)
+                                                     s))))
+                                        (tag-str
+                                         (and let-completion-annotation-format-tag
+                                              tag
+                                              (format
+                                               let-completion-annotation-format-tag
+                                               tag))))
+                                   (cond
+                                    ((and tag-str short)
+                                     (concat tag-str
+                                             (format
+                                              let-completion-annotation-format
+                                              short)))
+                                    (tag-str tag-str)
+                                    (short
+                                     (format let-completion-annotation-format
+                                             short))
+                                    (t
+                                     (format let-completion-annotation-format
+                                             let-completion-annotation-fallback))))
                                (when orig-ann (funcall orig-ann c)))))
                          :company-doc-buffer
                          (lambda (c)
                            (let ((cell (assoc c vals)))
                              (if cell
-                                 (let ((buf (let-completion--doc-buffer)))
+                                 (let* ((val (cddr cell))
+                                        (buf (let-completion--doc-buffer)))
                                    (with-current-buffer buf
                                      (let ((inhibit-read-only t)
                                            (print-level nil)
                                            (print-length nil))
                                        (erase-buffer)
-                                       (let* ((value (cdr cell))
-                                              (oneline (prin1-to-string value))
-                                              (text (if (> (length oneline) fill-column)
-                                                        (pp-to-string value)
-                                                      oneline)))
-                                         (insert text))
+                                       (when val
+                                         (let* ((oneline (prin1-to-string val))
+                                                (text (if (> (length oneline) fill-column)
+                                                          (pp-to-string val)
+                                                        oneline)))
+                                           (insert text)))
                                        (font-lock-ensure)))
                                    buf)
                                (when orig-doc (funcall orig-doc c))))))
