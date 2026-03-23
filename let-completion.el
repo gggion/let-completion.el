@@ -302,11 +302,12 @@ Called by `let-completion--extract-shape'."
                                         (goto-char name-end)
                                         (skip-chars-forward " \t\n")
                                         (when (< (point) (1- b-end))
-                                          (let ((vs (point))
-                                                (ve (scan-sexps (point) 1)))
-                                            (car (read-from-string
-                                                  (buffer-substring-no-properties
-                                                   vs ve))))))
+                                          (let* ((vs (point))
+                                                 (ve (scan-sexps (point) 1)))
+                                            (when ve
+                                              (car (read-from-string
+                                                    (buffer-substring-no-properties
+                                                     vs ve)))))))
                                     (error nil))))
                             (push (cons name (cons tag value)) result))))))
                    ;; Bare symbol.
@@ -385,12 +386,13 @@ Called by `let-completion--extract-shape'."
                               (goto-char name-end)
                               (skip-chars-forward " \t\n")
                               (when (< (point) (1- end))
-                                (let ((vs (point))
-                                      (ve (scan-sexps (point) 1)))
-                                  (car (read-from-string
-                                        (buffer-substring-no-properties
-                                         vs ve))))))
-                          ;; if `read' failed, return nil
+                                (let* ((vs (point))
+                                       (ve (scan-sexps (point) 1)))
+                                  (when ve
+                                    (car (read-from-string
+                                          (buffer-substring-no-properties
+                                           vs ve)))))))
+                          ;; if read or scan-sexps failed, return nil
                           (error nil))))
             (list (cons name (cons tag value)))))))))
 
