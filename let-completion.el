@@ -55,25 +55,357 @@
 
 (require 'cl-lib)
 
+;;;; Customization
+
 (defgroup let-completion nil
   "Show let-binding values in Elisp completion."
   :group 'lisp
   :prefix "let-completion-")
 
 (defcustom let-completion-annotation-format " [%s]"
-  "The format string for inline annotation."
-  :type 'string
-  :group 'let-completion)
+  "The format string for inline annotation.
+Receives one string argument: either the printed value or \"local\"."
+  :type 'string)
 
 (defcustom let-completion-inline-max-width 5
   "Max printed width for inline value annotation, or nil to disable.
 Only binding values whose `prin1-to-string' form fits within this
-many characters appear inline next to the candidate as \" [VALUE]\".
-Longer values show \" [local]\" instead.  The popupinfo buffer
-always shows the full value regardless of this setting.
+many characters appear inline next to the candidate.  Longer values
+show \" [local]\" instead.  The popupinfo buffer always shows the
+full value regardless of this setting.
 
 Also see `let-completion-mode'."
   :type '(choice natnum (const :tag "Disable" nil)))
+
+;;;; Binding Form Registry
+
+(defvar-local let-completion-binding-forms nil
+  "Buffer-local alist overriding binding form descriptors.
+Each entry is (SYMBOL . SPEC) where SPEC is a plist or function.
+Takes priority over symbol properties at lookup time.
+
+Set by major mode hooks for non-Elisp Lisp dialects.")
+
+(defun let-completion-register-binding-form (symbol spec)
+  "Register SYMBOL as a binding form with descriptor SPEC.
+SPEC is either a plist with keys `:bindings-index', `:binding-shape',
+and `:scope', or a function receiving (POS COMPLETION-POS) and
+returning an alist of (NAME-STRING . VALUE-OR-NIL).
+
+`:bindings-index' is the 1-based position of the binding sexp
+after the head symbol.  `:binding-shape' is one of `list',
+`arglist', `single', `error-var'.  `:scope' is one of `body',
+`then', `handlers'.
+
+Store SPEC as symbol property `let-completion--binding-form'.
+Buffer-local overrides via `let-completion-binding-forms' take
+priority at lookup time.
+
+Called at load time for built-in forms.  Third-party macros call
+this to opt in."
+  (put symbol 'let-completion--binding-form spec))
+
+(defun let-completion--lookup-spec (symbol)
+  "Look up binding form descriptor for SYMBOL.
+Check buffer-local `let-completion-binding-forms' first, then
+symbol property `let-completion--binding-form'.
+
+Return SPEC or nil."
+  (or (alist-get symbol let-completion-binding-forms)
+      (get symbol 'let-completion--binding-form)))
+
+;;;;; Built-in Registrations
+
+;; let-family: binding list at index 1, list shape.
+(let-completion-register-binding-form 'let
+  '(:bindings-index 1 :binding-shape list :scope body))
+(let-completion-register-binding-form 'let*
+  '(:bindings-index 1 :binding-shape list :scope body))
+(let-completion-register-binding-form 'when-let*
+  '(:bindings-index 1 :binding-shape list :scope body))
+(let-completion-register-binding-form 'if-let
+  '(:bindings-index 1 :binding-shape list :scope then))
+(let-completion-register-binding-form 'if-let*
+  '(:bindings-index 1 :binding-shape list :scope then))
+(let-completion-register-binding-form 'and-let*
+  '(:bindings-index 1 :binding-shape list :scope body))
+
+;; Definitions: arglist at index 2.
+(let-completion-register-binding-form 'defun
+  '(:bindings-index 2 :binding-shape arglist :scope body))
+(let-completion-register-binding-form 'defmacro
+  '(:bindings-index 2 :binding-shape arglist :scope body))
+(let-completion-register-binding-form 'defsubst
+  '(:bindings-index 2 :binding-shape arglist :scope body))
+(let-completion-register-binding-form 'cl-defun
+  '(:bindings-index 2 :binding-shape arglist :scope body))
+
+;; Lambda: arglist at index 1.
+(let-completion-register-binding-form 'lambda
+  '(:bindings-index 1 :binding-shape arglist :scope body))
+
+;; Iteration: single binding at index 1.
+(let-completion-register-binding-form 'dolist
+  '(:bindings-index 1 :binding-shape single :scope body))
+(let-completion-register-binding-form 'dotimes
+  '(:bindings-index 1 :binding-shape single :scope body))
+
+;; Error handling: bare symbol at index 1, visible in handlers only.
+(let-completion-register-binding-form 'condition-case
+  '(:bindings-index 1 :binding-shape error-var :scope handlers))
+
+;;;; Scope Checking
+
+(defun let-completion--scope-visible-p
+    (form-start bindings-end completion-pos scope)
+  "Return non-nil if COMPLETION-POS is in scope per SCOPE.
+FORM-START is the opening paren of the entire form.
+BINDINGS-END is the position after the binding sexp.
+
+`body'     -- visible in all forms after the binding list.
+`then'     -- visible only in the first form after the binding list.
+`handlers' -- visible in all forms after the second element
+              (the protected expression in `condition-case').
+
+Called by `let-completion--extract-by-spec'."
+  (ignore form-start)
+  (pcase scope
+    ('body
+     (> completion-pos bindings-end))
+    ('then
+     (and (> completion-pos bindings-end)
+          (save-excursion
+            (goto-char bindings-end)
+            (skip-chars-forward " \t\n")
+            (let ((then-end (ignore-errors (scan-sexps (point) 1))))
+              (or (null then-end)
+                  (<= completion-pos then-end))))))
+    ('handlers
+     (save-excursion
+       (goto-char bindings-end)
+       (skip-chars-forward " \t\n")
+       ;; Skip the protected expression.
+       (let ((protected-end (ignore-errors (scan-sexps (point) 1))))
+         (and protected-end
+              (> completion-pos protected-end)))))
+    (_ t)))
+
+;;;; Shape Extractors
+
+(defun let-completion--extract-shape (shape start end completion-pos)
+  "Dispatch extraction on SHAPE between START and END.
+COMPLETION-POS is used to skip bindings that contain point.
+SHAPE is one of `list', `arglist', `single', `error-var'.
+
+Return alist of (NAME-STRING . VALUE-OR-NIL).
+
+Called by `let-completion--extract-by-spec'."
+  (pcase shape
+    ('list     (let-completion--extract-shape-list start end completion-pos))
+    ('arglist  (let-completion--extract-shape-arglist start end completion-pos))
+    ('single   (let-completion--extract-shape-single start end completion-pos))
+    ('error-var (let-completion--extract-shape-error-var start end completion-pos))))
+
+(defun let-completion--extract-shape-list (start end completion-pos)
+  "Extract bindings from a list-shaped form between START and END.
+Handle ((VAR EXPR) ...) and bare (VAR ...) entries.
+Skip any binding whose span contains COMPLETION-POS.
+
+Return alist of (NAME-STRING . VALUE-OR-NIL).
+
+Used for `let', `let*', `when-let*', `if-let*', `and-let*'."
+  (save-excursion
+    (goto-char (1+ start))
+    (let (result)
+      (while (progn (skip-chars-forward " \t\n")
+                    (< (point) (1- end)))
+        (let ((b-start (point)))
+          (condition-case nil
+              (let ((b-end (scan-sexps (point) 1)))
+                (if (<= b-start completion-pos b-end)
+                    (goto-char b-end)
+                  (let ((text (buffer-substring-no-properties
+                               b-start b-end)))
+                    (condition-case nil
+                        (let ((sexp (car (read-from-string text))))
+                          (cond
+                           ((consp sexp)
+                            (push (cons (symbol-name (car sexp))
+                                        (cadr sexp))
+                                  result))
+                           ((symbolp sexp)
+                            (push (cons (symbol-name sexp) nil) result))))
+                      ;; `read' failed — extract name only via scan-sexps.
+                      (error
+                       (save-excursion
+                         (goto-char b-start)
+                         (when (eq (char-after) ?\()
+                           (forward-char 1))
+                         (skip-chars-forward " \t\n")
+                         (let ((name-end (ignore-errors
+                                           (scan-sexps (point) 1))))
+                           (when name-end
+                             (push (cons (buffer-substring-no-properties
+                                          (point) name-end)
+                                         nil)
+                                   result)))))))
+                  (goto-char b-end)))
+            ;; scan-sexps failed — bail out of the loop.
+            (error (goto-char end)))))
+      result)))
+
+(defun let-completion--extract-shape-arglist (start end completion-pos)
+  "Extract parameter names from an arglist between START and END.
+Skip lambda-list keywords (&optional, &rest, &key, etc.) and
+destructuring sublists.  All values are nil.
+Skip any name whose span contains COMPLETION-POS.
+
+Return alist of (NAME-STRING . nil).
+
+Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda'."
+  (save-excursion
+    (goto-char (1+ start))
+    (let (result)
+      (while (progn (skip-chars-forward " \t\n")
+                    (< (point) (1- end)))
+        (let ((sym-start (point)))
+          (condition-case nil
+              (let ((sym-end (scan-sexps (point) 1)))
+                (if (<= sym-start completion-pos sym-end)
+                    (goto-char sym-end)
+                  (let ((name (buffer-substring-no-properties
+                               sym-start sym-end)))
+                    (unless (or (string-prefix-p "&" name)
+                                (eq (char-after sym-start) ?\())
+                      (push (cons name nil) result)))
+                  (goto-char sym-end)))
+            (error (goto-char end)))))
+      result)))
+
+(defun let-completion--extract-shape-single (start end completion-pos)
+  "Extract one binding from a (VAR EXPR) form between START and END.
+Skip if span contains COMPLETION-POS.
+
+Return one-element alist or nil.
+
+Used for `dolist', `dotimes'."
+  (if (<= start completion-pos end)
+      nil
+    (save-excursion
+      (let ((text (buffer-substring-no-properties start end)))
+        (condition-case nil
+            (let ((sexp (car (read-from-string text))))
+              (when (and (consp sexp) (symbolp (car sexp)))
+                (list (cons (symbol-name (car sexp))
+                            (cadr sexp)))))
+          ;; `read' failed — extract name only.
+          (error
+           (goto-char (1+ start))
+           (skip-chars-forward " \t\n")
+           (let ((name-end (ignore-errors (scan-sexps (point) 1))))
+             (when name-end
+               (list (cons (buffer-substring-no-properties
+                            (point) name-end)
+                           nil))))))))))
+
+(defun let-completion--extract-shape-error-var (start end completion-pos)
+  "Extract one name from a bare symbol between START and END.
+Skip if span contains COMPLETION-POS.
+
+Return one-element alist or nil.
+
+Used for `condition-case'."
+  (if (<= start completion-pos end)
+      nil
+    (let ((name (string-trim
+                 (buffer-substring-no-properties start end))))
+      (unless (or (string-empty-p name) (string= name "nil"))
+        (list (cons name nil))))))
+
+;;;; Dispatcher
+
+(defun let-completion--extract-bindings-at (pos completion-pos)
+  "Extract bindings from form at POS using registry descriptor.
+POS is the opening paren of the form.  COMPLETION-POS is point.
+Look up the head symbol in the registry, then dispatch to the
+appropriate shape extractor.
+
+Return alist of (NAME-STRING . VALUE-OR-NIL) or nil.
+
+Called by `let-completion--binding-values'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (skip-chars-forward " \t\n")
+    (let* ((head-start (point))
+           (head-end (ignore-errors (scan-sexps (point) 1))))
+      (when head-end
+        (let* ((head-str (buffer-substring-no-properties
+                          head-start head-end))
+               (head-sym (intern-soft head-str))
+               (spec (when head-sym
+                       (let-completion--lookup-spec head-sym))))
+          (when spec
+            (if (functionp spec)
+                ;; Custom extractor function.
+                (funcall spec pos completion-pos)
+              (let-completion--extract-by-spec
+               pos completion-pos head-end spec))))))))
+
+(defun let-completion--extract-by-spec (pos completion-pos head-end spec)
+  "Extract bindings from form at POS according to SPEC.
+HEAD-END is position after the head symbol.
+COMPLETION-POS is where point is.
+SPEC is the registry descriptor plist.
+
+Navigate to the sexp at `:bindings-index', check `:scope' against
+COMPLETION-POS, dispatch on `:binding-shape'.
+
+Return alist of (NAME-STRING . VALUE-OR-NIL) or nil.
+
+Called by `let-completion--extract-bindings-at'."
+  (save-excursion
+    (goto-char head-end)
+    (let ((idx (plist-get spec :bindings-index))
+          (shape (plist-get spec :binding-shape))
+          (scope (plist-get spec :scope)))
+      ;; Navigate forward to the binding sexp.
+      ;; idx 1 means the next sexp after head, idx 2 means skip one more.
+      (condition-case nil
+          (dotimes (_ (1- idx))
+            (skip-chars-forward " \t\n")
+            (forward-sexp 1))
+        (scan-error nil))
+      (skip-chars-forward " \t\n")
+      (let ((bindings-start (point))
+            (bindings-end (ignore-errors (scan-sexps (point) 1))))
+        (when (and bindings-end
+                   (let-completion--scope-visible-p
+                    pos bindings-end completion-pos scope))
+          (let-completion--extract-shape
+           shape bindings-start bindings-end completion-pos))))))
+
+;;;; Top-Level Binding Walker
+
+(defun let-completion--binding-values ()
+  "Return alist of (NAME-STRING . RAW-SEXP) for enclosing bindings.
+Walk enclosing paren positions from `syntax-ppss', look up each
+form's head symbol in the binding form registry, and extract
+bindings via the registered descriptor.
+
+Innermost binding for a given name appears first so `assoc'
+finds the correct shadowing.
+
+Called by `let-completion--advice'."
+  (let ((completion-pos (point))
+        result)
+    (dolist (pos (nth 9 (syntax-ppss)))
+      (let ((bindings
+             (let-completion--extract-bindings-at pos completion-pos)))
+        (dolist (b bindings)
+          (push b result))))
+    result))
+
+;;;; Doc Buffer
 
 (defvar let-completion--doc-buffer nil
   "Reusable buffer for pretty-printed binding values.
@@ -93,122 +425,13 @@ Called by `let-completion--advice' for `:company-doc-buffer'."
               (delay-mode-hooks (emacs-lisp-mode))
               (current-buffer)))))
 
-(defun let-completion--extract-let-bindings (pos)
-  "Extract bindings from a let-like form starting at POS.
-POS is the opening paren.  Return alist of (NAME-STRING . RAW-SEXP),
-or nil if POS does not start a recognized form.
-
-Recognize `let', `let*', `when-let', `when-let*', `if-let',
-`if-let*', and `and-let*'.  For `if-let' and `if-let*', return
-nil when point is in the else branch, where bindings are not in
-scope.
-
-Skip the binding whose source span contains point.
-
-Called by `let-completion--binding-values'."
-  (save-excursion
-    (let ((completion-pos (point)))
-      (goto-char (1+ pos))
-      (when (looking-at
-             "\\_<\\(?:and-let\\*\\|\\(if-let\\*?\\)\\|let\\*?\\|when-let\\*?\\)\\_>")
-        (let ((is-if-let (match-beginning 1)))
-          (forward-sexp 1)
-          (let ((bindings-end (save-excursion
-                                (ignore-errors (forward-sexp 1))
-                                (point))))
-            ;; For `if-let'/`if-let*', suppress bindings in else branch.
-            (when (and is-if-let
-                       (ignore-errors
-                         (save-excursion
-                           (goto-char bindings-end)
-                           (forward-sexp 1)
-                           (< (point) completion-pos))))
-              (setq bindings-end nil))
-            (when bindings-end
-              ;; Move inside the binding list paren.
-              (skip-chars-forward " \t\n")
-              (when (eq (char-after) ?\()
-                (forward-char 1)
-                (let (result)
-                  (while (< (point) bindings-end)
-                    (skip-chars-forward " \t\n")
-                    (when (or (>= (point) bindings-end)
-                              (eq (char-after) ?\)))
-                      (setq bindings-end (point)))
-                    (let ((b-start (point)))
-                      (condition-case nil
-                          (let* ((b-end (scan-sexps (point) 1))
-                                 (at-point (<= b-start
-                                               completion-pos
-                                               b-end)))
-                            (unless at-point
-                              (let ((b (read (buffer-substring-no-properties
-                                              b-start b-end))))
-                                (cond
-                                 ((consp b)
-                                  (push (cons (symbol-name (car b))
-                                              (if (cdr b) (cadr b) nil))
-                                        result))
-                                 ((symbolp b)
-                                  (push (cons (symbol-name b) nil) result)))))
-                            (goto-char b-end))
-                        ;; Unreadable binding -- skip forward.
-                        (error
-                         (ignore-errors
-                           (goto-char (or (scan-sexps (point) 1)
-                                          bindings-end)))))))
-                  result)))))))))
-
-(defun let-completion--extract-single-binding (pos keyword)
-  "Extract a single binding from form at POS starting with KEYWORD.
-KEYWORD is a string like \"dolist\" or \"dotimes\".  The binding
-form is (VAR EXPR).  Return one-element alist or nil.
-
-Skip the binding when point falls inside its span.
-
-Called by `let-completion--binding-values'."
-  (save-excursion
-    (let ((completion-pos (point)))
-      (goto-char (1+ pos))
-      (when (looking-at (concat "\\_<" (regexp-quote keyword) "\\_>"))
-        (forward-sexp 1)
-        (skip-chars-forward " \t\n")
-        (let ((b-start (point)))
-          (ignore-errors
-            (let ((b-end (scan-sexps (point) 1)))
-              (unless (<= b-start completion-pos b-end)
-                (let ((binding (read (buffer-substring-no-properties
-                                      b-start b-end))))
-                  (when (and (consp binding) (symbolp (car binding)))
-                    (list (cons (symbol-name (car binding))
-                                (cadr binding)))))))))))))
-
-(defun let-completion--binding-values ()
-  "Return alist of (NAME-STRING . RAW-SEXP) for enclosing bindings.
-Walk paren positions from `syntax-ppss' (element 9), detect
-`let', `let*', `when-let*', `if-let*', `and-let*', `dolist', and
-`dotimes' forms, read each binding list with `read', and collect
-name-value pairs.  Silently skip unreadable or malformed forms.
-
-The innermost binding for a given name appears first in the result,
-so `assoc' finds the correct shadowing.
-
-Called by `let-completion--advice'."
-  (let (result)
-    (dolist (pos (nth 9 (syntax-ppss)))
-      (let ((bindings
-             (or (let-completion--extract-let-bindings pos)
-                 (let-completion--extract-single-binding pos "dolist")
-                 (let-completion--extract-single-binding pos "dotimes"))))
-        (dolist (b bindings)
-          (push b result))))
-    result))
+;;;; Completion Table Wrapper
 
 (defun let-completion--make-table (table sort-fn local-names)
   "Wrap TABLE to inject LOCAL-NAMES and SORT-FN into completion.
-Merge LOCAL-NAMES into all completion actions so candidates
-found by our parser but missed by `elisp--local-variables' appear
-in results.  Inject `display-sort-function' into the metadata
+Merge LOCAL-NAMES into all completion actions so candidates found
+by the parser but missed by `elisp--local-variables' appear in
+results.  Inject `display-sort-function' into the metadata
 response via SORT-FN.  Pass `boundaries' actions through unchanged.
 
 Called by `let-completion--advice'."
@@ -291,16 +514,23 @@ Installed as `:around' advice on `elisp-completion-at-point' by
                                            (print-level nil)
                                            (print-length nil))
                                        (erase-buffer)
-                                       (insert (pp-to-string (cdr cell)))
+                                       (let* ((value (cdr cell))
+                                              (oneline (prin1-to-string value))
+                                              (text (if (> (length oneline) fill-column)
+                                                        (pp-to-string value)
+                                                      oneline)))
+                                         (insert text))
                                        (font-lock-ensure)))
                                    buf)
                                (when orig-doc (funcall orig-doc c))))))
                    (cl-loop for (k v) on plist by #'cddr
-                            unless (memq k '( :annotation-function
-                                              :company-doc-buffer
-                                              :display-sort-function))
+                            unless (memq k '(:annotation-function
+                                             :company-doc-buffer
+                                             :display-sort-function))
                             nconc (list k v))))))))
     result))
+
+;;;; Minor Mode
 
 ;;;###autoload
 (define-minor-mode let-completion-mode
