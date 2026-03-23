@@ -97,6 +97,38 @@ full value regardless of this setting.
 Also see `let-completion-mode'."
   :type '(choice natnum (const :tag "Disable" nil)))
 
+(defcustom let-completion-tag-refine-alist nil
+  "Alist mapping (TAG . VALUE-HEAD) to replacement tag strings.
+Each key is a cons of (TAG-STRING . SYMBOL-OR-NIL) where
+SYMBOL-OR-NIL is the `car-safe' of the binding value.  When a
+binding's tag and value head match a key, the associated string
+replaces the tag.
+
+Consulted before `let-completion-tag-refine-function'.  First
+match wins.
+
+Example:
+
+    \\='(((\"let\" . lambda) . \"λ let\")
+      ((\"arg\" . lambda) . \"LAMBDA arg\"))
+
+Also see `let-completion-tag-refine-function'."
+  :type '(alist :key-type (cons string symbol)
+                :value-type string))
+
+(defcustom let-completion-tag-refine-function nil
+  "Function to refine tag strings based on binding context.
+Receives three arguments: NAME (string), TAG (string), and VALUE
+\(the raw sexp or nil).  Returns a replacement tag string.
+Return nil to keep the original TAG.
+
+This function runs after `let-completion-tag-refine-alist' is
+consulted.  Use it for context-dependent logic that the alist
+cannot express.
+
+Also see `let-completion-tag-refine-alist'."
+  :type '(choice function (const :tag "Disable" nil)))
+
 ;;;; Binding Form Registry
 
 (defvar-local let-completion-binding-forms nil
@@ -555,6 +587,16 @@ Installed as `:around' advice on `elisp-completion-at-point' by
                              (if cell
                                  (let* ((tag (cadr cell))
                                         (val (cddr cell))
+                                        ;; 1. Alist refinement.
+                                        (tag (or (cdr (assoc (cons tag (car-safe val))
+                                                             let-completion-tag-refine-alist))
+                                                 tag))
+                                        ;; 2. Function refinement.
+                                        (tag (if let-completion-tag-refine-function
+                                                 (or (funcall let-completion-tag-refine-function
+                                                              c tag val)
+                                                     tag)
+                                               tag))
                                         (short
                                          (and let-completion-inline-max-width
                                               val
