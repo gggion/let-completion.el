@@ -169,21 +169,49 @@ Return SPEC or nil."
 
 ;;;;; Built-in Registrations
 
-;; let-family: binding list at index 1, list shape.
+;;;;;; list shape: ((VAR EXPR) ...) bindings
+
+;; Index 1, body scope.
 (let-completion-register-binding-form 'let
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'let*
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'when-let*
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+(let-completion-register-binding-form 'and-let*
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+(let-completion-register-binding-form 'dlet
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+(let-completion-register-binding-form 'cl-do
+  '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
+(let-completion-register-binding-form 'cl-do*
+  '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
+(let-completion-register-binding-form 'cl-symbol-macrolet
+  '(:bindings-index 1 :binding-shape list :scope body :tag "symm"))
+
+;; Index 1, then scope.
 (let-completion-register-binding-form 'if-let
   '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
 (let-completion-register-binding-form 'if-let*
   '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
-(let-completion-register-binding-form 'and-let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 
-;; Definitions: arglist at index 2.
+;; Index 2, body scope.
+(let-completion-register-binding-form 'named-let
+  '(:bindings-index 2 :binding-shape list :scope body :tag "let"))
+
+;;;;;; arglist shape: (ARG &optional ARG2 &rest ARG3) parameters
+
+;; Index 1, body scope.
+(let-completion-register-binding-form 'lambda
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-destructuring-bind
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-multiple-value-bind
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "mv"))
+(let-completion-register-binding-form 'with-slots
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "slot"))
+
+;; Index 2, body scope.
 (let-completion-register-binding-form 'defun
   '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'defmacro
@@ -192,21 +220,38 @@ Return SPEC or nil."
   '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'cl-defun
   '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-defmacro
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-defsubst
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'define-inline
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-defgeneric
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-defmethod
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'iter-defun
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
+(let-completion-register-binding-form 'cl-iter-defun
+  '(:bindings-index 2 :binding-shape arglist :scope body :tag "arg"))
 
-;; Lambda: arglist at index 1.
-(let-completion-register-binding-form 'lambda
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "arg"))
+;;;;;; single shape: (VAR EXPR) one binding
 
-;; Iteration: single binding at index 1.
 (let-completion-register-binding-form 'dolist
   '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
 (let-completion-register-binding-form 'dotimes
   '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+(let-completion-register-binding-form 'cl-do-symbols
+  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+(let-completion-register-binding-form 'cl-do-all-symbols
+  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
 
-;; Error handling: bare symbol at index 1, visible in handlers only.
+;;;;;; error-var shape: bare symbol, visible in handlers only
+
 (let-completion-register-binding-form 'condition-case
   '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
-
+(let-completion-register-binding-form 'condition-case-unless-debug
+  '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
 ;;;; Scope Checking
 
 (defun let-completion--scope-visible-p
