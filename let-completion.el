@@ -129,6 +129,21 @@ cannot express.
 Also see `let-completion-tag-refine-alist'."
   :type '(choice function (const :tag "Disable" nil)))
 
+(defcustom let-completion-tag-alist nil
+  "Alist mapping binding form symbols to replacement tag strings.
+Each entry is (SYMBOL . TAG-STRING).  When a binding form's head
+symbol matches SYMBOL, TAG-STRING replaces the tag from the
+registry descriptor before any refinement via
+`let-completion-tag-refine-alist' or
+`let-completion-tag-refine-function'.
+
+Example:
+
+    \\='((cond-let--and-let* . \"clet\")
+      (dolist . \"each\")
+      (condition-case . \"rescue\"))"
+  :type '(alist :key-type symbol :value-type string))
+
 ;;;; Binding Form Registry
 
 (defvar-local let-completion-binding-forms nil
@@ -632,7 +647,8 @@ Look up the head symbol in the registry, then dispatch to the
 appropriate shape extractor.
 
 If the descriptor contains an `:extractor' key, call that function
-with (POS COMPLETION-POS TAG) where TAG is from the `:tag' key.
+with (POS COMPLETION-POS TAG) where TAG is resolved from
+`let-completion-tag-alist' first, then the `:tag' key.
 Otherwise dispatch via `let-completion--extract-by-spec'.
 
 Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
@@ -652,13 +668,16 @@ Called by `let-completion--binding-values'."
                (spec (when head-sym
                        (let-completion--lookup-spec head-sym))))
           (when spec
-            ;; -- Dispatch: extractor function or standard plist.
-            (let ((extractor (plist-get spec :extractor)))
-              (if extractor
-                  (funcall extractor pos completion-pos
-                           (plist-get spec :tag))
-                (let-completion--extract-by-spec
-                 pos completion-pos head-end spec)))))))))
+            ;; -- Resolve: tag override from defcustom alist.
+            (let ((tag (or (alist-get head-sym let-completion-tag-alist)
+                           (plist-get spec :tag))))
+              ;; -- Dispatch: extractor function or standard plist.
+              (let ((extractor (plist-get spec :extractor)))
+                (if extractor
+                    (funcall extractor pos completion-pos tag)
+                  (let-completion--extract-by-spec
+                   pos completion-pos head-end
+                   (plist-put (copy-sequence spec) :tag tag)))))))))))
 
 (defun let-completion--extract-by-spec (pos completion-pos head-end spec)
   "Extract bindings from form at POS according to SPEC.
