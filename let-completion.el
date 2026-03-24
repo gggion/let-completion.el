@@ -411,9 +411,29 @@ Called by `let-completion--extract-shape'."
             (error (goto-char end)))))
       result)))
 
+(defun let-completion--arglist-non-binding-p (name)
+  "Return non-nil if NAME is not a variable binding in a compound spec.
+Non-binding elements include lambda-list keywords, keyword symbols,
+boolean constants, and numeric literals.  These appear as default
+values or structural markers inside compound arglist specs.
+
+Called by `let-completion--extract-shape-arglist'."
+  (or (string-prefix-p "&" name)
+      (string-prefix-p ":" name)
+      (string= name "nil")
+      (string= name "t")
+      (string-match-p "\\`[0-9+-]" name)))
+
 (defun let-completion--extract-shape-arglist (start end completion-pos tag)
   "Extract parameter names from an arglist between START and END.
-Skip lambda-list keywords and destructuring sublists.
+Skip lambda-list keywords.  For bare symbols, collect directly.
+For compound specs like (VAR DEFAULT SUPPLIED-P), enter the list
+and collect bare symbols that pass `let-completion--arglist-non-binding-p'.
+
+Handle the CL extended keyword spec ((:KEYWORD VAR) DEFAULT) by
+entering the inner list and collecting the second element when
+the current context is `&key'.
+
 Track the current lambda-list keyword to refine TAG per parameter.
 TAG is the base tag string from the registry descriptor, used for
 required parameters.  Lambda-list keywords override it.
@@ -421,7 +441,8 @@ Skip any name whose span contains COMPLETION-POS.
 
 Return alist of (NAME-STRING TAG-STRING . nil).
 
-Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda'.
+Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda',
+`cl-destructuring-bind'.
 Called by `let-completion--extract-shape'."
   (save-excursion
     (goto-char (1+ start))
@@ -434,16 +455,80 @@ Called by `let-completion--extract-shape'."
               (let ((sym-end (scan-sexps (point) 1)))
                 (if (<= sym-start completion-pos sym-end)
                     (goto-char sym-end)
-                  (let ((name (buffer-substring-no-properties
-                               sym-start sym-end)))
-                    (cond
-                     ;; Lambda-list keyword -- update tag, do not collect.
-                     ((string-prefix-p "&" name)
-                      (setq current-tag name))
-                     ;; Destructuring sublist -- skip.
-                     ((eq (char-after sym-start) ?\())
-                     ;; Parameter name -- collect with current tag.
-                     (t
+                  (cond
+                   ;; Navigate: lambda-list keyword -- update tag, do not
+                   ;; collect.
+                   ((and (not (eq (char-after sym-start) ?\())
+                         (let ((name (buffer-substring-no-properties
+                                      sym-start sym-end)))
+                           (when (string-prefix-p "&" name)
+                             (setq current-tag name)
+                             t))))
+                   ;; Walk: compound spec -- enter and collect symbols.
+                   ((eq (char-after sym-start) ?\()
+                    (save-excursion
+                      (goto-char (1+ sym-start))
+                      (while (progn (skip-chars-forward " \t\n")
+                                    (< (point) (1- sym-end)))
+                        (let ((inner-start (point)))
+                          (condition-case nil
+                              (let ((inner-end (scan-sexps (point) 1)))
+                                (unless (<= inner-start
+                                            completion-pos inner-end)
+                                  (cond
+                                   ;; Entry: inner list in &key context is
+                                   ;; ((:KEYWORD VAR) ...).  Enter and take
+                                   ;; second element as variable name.
+                                   ((eq (char-after inner-start) ?\()
+                                    (when (string= current-tag "&key")
+                                      (save-excursion
+                                        (goto-char (1+ inner-start))
+                                        ;; Navigate: skip keyword element.
+                                        (skip-chars-forward " \t\n")
+                                        (ignore-errors (forward-sexp 1))
+                                        ;; Navigate: now at VAR position.
+                                        (skip-chars-forward " \t\n")
+                                        (when (< (point) (1- inner-end))
+                                          (let* ((var-start (point))
+                                                 (var-end
+                                                  (ignore-errors
+                                                    (scan-sexps (point) 1))))
+                                            (when (and var-end
+                                                       (not (eq (char-after
+                                                                 var-start)
+                                                                ?\()))
+                                              (let ((vname
+                                                     (buffer-substring-no-properties
+                                                      var-start var-end)))
+                                                (unless
+                                                    (let-completion--arglist-non-binding-p
+                                                     vname)
+                                                  (push
+                                                   (cons vname
+                                                         (cons current-tag
+                                                               nil))
+                                                   result)))))))))
+                                   ;; Entry: quoted form or string -- skip.
+                                   ((memq (char-after inner-start) '(?' ?\"))
+                                    nil)
+                                   ;; Entry: bare symbol -- collect if it
+                                   ;; passes the non-binding filter.
+                                   (t
+                                    (let ((inner-name
+                                           (buffer-substring-no-properties
+                                            inner-start inner-end)))
+                                      (unless
+                                          (let-completion--arglist-non-binding-p
+                                           inner-name)
+                                        (push (cons inner-name
+                                                    (cons current-tag nil))
+                                              result))))))
+                                (goto-char inner-end))
+                            (error (goto-char sym-end)))))))
+                   ;; Entry: plain parameter name -- collect with current tag.
+                   (t
+                    (let ((name (buffer-substring-no-properties
+                                 sym-start sym-end)))
                       (push (cons name (cons current-tag nil)) result))))
                   (goto-char sym-end)))
             (error (goto-char end)))))
