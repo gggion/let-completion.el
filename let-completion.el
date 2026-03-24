@@ -268,6 +268,17 @@ Return SPEC or nil."
   '(:bindings-index 1 :binding-shape error-var :scope body :tag "dir"))
 (let-completion-register-binding-form 'ert-with-message-capture
   '(:bindings-index 1 :binding-shape error-var :scope body :tag "msg"))
+
+;;;;;; Custom extractors
+
+(let-completion-register-binding-form 'cl-flet
+  '(:extractor let-completion--extract-flet :tag "fn"))
+(let-completion-register-binding-form 'cl-labels
+  '(:extractor let-completion--extract-flet :tag "fn"))
+(let-completion-register-binding-form 'cl-macrolet
+  '(:extractor let-completion--extract-flet :tag "mac"))
+
+
 ;;;; Scope Checking
 
 (defun let-completion--scope-visible-p
@@ -473,6 +484,59 @@ Called by `let-completion--extract-shape'."
       (unless (or (string-empty-p name) (string= name "nil"))
         (list (cons name (cons tag nil)))))))
 
+;;; Custom Extractor Functions
+
+(defun let-completion--extract-flet (pos completion-pos tag)
+  "Extract function names from a flet-like form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Walk the binding list at index 1.  Each entry has the structure
+\(FUNC ARGLIST BODY...).  Extract FUNC as name via `scan-sexps'.
+Values are nil.  Scope check requires COMPLETION-POS past the
+binding list end.  Skip entries whose span contains COMPLETION-POS.
+
+Return alist of (NAME-STRING TAG-STRING . nil) or nil.
+
+Used for `cl-flet', `cl-labels', `cl-macrolet'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (skip-chars-forward " \t\n")
+    ;; Skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (when head-end
+        (goto-char head-end)
+        (skip-chars-forward " \t\n")
+        ;; Now at the binding list.
+        (let ((list-start (point))
+              (list-end (ignore-errors (scan-sexps (point) 1))))
+          (when (and list-end
+                     (> completion-pos list-end))
+            (goto-char (1+ list-start))
+            (let (result)
+              (while (progn (skip-chars-forward " \t\n")
+                            (< (point) (1- list-end)))
+                (let ((entry-start (point)))
+                  (condition-case nil
+                      (let ((entry-end (scan-sexps (point) 1)))
+                        (when (and (eq (char-after entry-start) ?\()
+                                   (not (<= entry-start completion-pos entry-end)))
+                          (save-excursion
+                            (goto-char (1+ entry-start))
+                            (skip-chars-forward " \t\n")
+                            (let ((name-start (point))
+                                  (name-end (ignore-errors
+                                              (scan-sexps (point) 1))))
+                              (when name-end
+                                (let ((name (buffer-substring-no-properties
+                                             name-start name-end)))
+                                  (push (cons name (cons tag nil)) result))))))
+                        (goto-char entry-end))
+                    (error (goto-char list-end)))))
+              result)))))))
+
+
 ;;;; Dispatcher
 
 (defun let-completion--extract-bindings-at (pos completion-pos)
@@ -481,7 +545,11 @@ POS is the opening paren of the form.  COMPLETION-POS is point.
 Look up the head symbol in the registry, then dispatch to the
 appropriate shape extractor.
 
-Return alist of (NAME-STRING . VALUE-OR-NIL) or nil.
+If the descriptor contains an `:extractor' key, call that function
+with (POS COMPLETION-POS TAG) where TAG is from the `:tag' key.
+Otherwise dispatch via `let-completion--extract-by-spec'.
+
+Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
 
 Called by `let-completion--binding-values'."
   (save-excursion
@@ -496,11 +564,12 @@ Called by `let-completion--binding-values'."
                (spec (when head-sym
                        (let-completion--lookup-spec head-sym))))
           (when spec
-            (if (functionp spec)
-                ;; Custom extractor function.
-                (funcall spec pos completion-pos)
-              (let-completion--extract-by-spec
-               pos completion-pos head-end spec))))))))
+            (let ((extractor (plist-get spec :extractor)))
+              (if extractor
+                  (funcall extractor pos completion-pos
+                           (plist-get spec :tag))
+                (let-completion--extract-by-spec
+                 pos completion-pos head-end spec)))))))))
 
 (defun let-completion--extract-by-spec (pos completion-pos head-end spec)
   "Extract bindings from form at POS according to SPEC.
