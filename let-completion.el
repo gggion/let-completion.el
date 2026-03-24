@@ -503,35 +503,41 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
   (save-excursion
     (goto-char (1+ pos))
     (skip-chars-forward " \t\n")
-    ;; Skip head symbol.
+    ;; -- Navigate: skip head symbol.
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
       (when head-end
         (goto-char head-end)
         (skip-chars-forward " \t\n")
-        ;; Now at the binding list.
+        ;; -- Navigate: now at binding list.
         (let ((list-start (point))
               (list-end (ignore-errors (scan-sexps (point) 1))))
+          ;; -- Scope: binding list must end before completion-pos.
           (when (and list-end
                      (> completion-pos list-end))
             (goto-char (1+ list-start))
+            ;; -- Walk: iterate entries in binding list.
             (let (result)
               (while (progn (skip-chars-forward " \t\n")
                             (< (point) (1- list-end)))
                 (let ((entry-start (point)))
                   (condition-case nil
                       (let ((entry-end (scan-sexps (point) 1)))
+                        ;; -- Entry: skip if not a list or contains point.
                         (when (and (eq (char-after entry-start) ?\()
-                                   (not (<= entry-start completion-pos entry-end)))
+                                   (not (<= entry-start
+                                             completion-pos entry-end)))
                           (save-excursion
                             (goto-char (1+ entry-start))
                             (skip-chars-forward " \t\n")
+                            ;; -- Entry: extract name (first element).
                             (let ((name-start (point))
                                   (name-end (ignore-errors
                                               (scan-sexps (point) 1))))
                               (when name-end
                                 (let ((name (buffer-substring-no-properties
                                              name-start name-end)))
-                                  (push (cons name (cons tag nil)) result))))))
+                                  (push (cons name (cons tag nil))
+                                        result))))))
                         (goto-char entry-end))
                     (error (goto-char list-end)))))
               result)))))))
@@ -555,15 +561,18 @@ Called by `let-completion--binding-values'."
   (save-excursion
     (goto-char (1+ pos))
     (skip-chars-forward " \t\n")
+    ;; -- Navigate: read head symbol.
     (let* ((head-start (point))
            (head-end (ignore-errors (scan-sexps (point) 1))))
       (when head-end
+        ;; -- Navigate: look up registry descriptor.
         (let* ((head-str (buffer-substring-no-properties
                           head-start head-end))
                (head-sym (intern-soft head-str))
                (spec (when head-sym
                        (let-completion--lookup-spec head-sym))))
           (when spec
+            ;; -- Dispatch: extractor function or standard plist.
             (let ((extractor (plist-get spec :extractor)))
               (if extractor
                   (funcall extractor pos completion-pos
