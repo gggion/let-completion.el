@@ -41,7 +41,12 @@
 
 ;; Strict (SYMBOL VALUEFORM) pairs, no bare symbols.
 ;; The standard `list' shape extractor handles these directly.
+;; `cond-let--and$', `cond-let--when$', and `cond-let--and>' bind
+;; the fixed name `$' without a user-written symbol and are not
+;; registered.  `cond-let*' and `cond-let' use vector clause syntax
+;; requiring a custom extractor and are deferred.
 
+;; body scope: bindings visible in all body forms.
 (let-completion-register-binding-form 'cond-let--and-let*
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'cond-let--and-let
@@ -50,6 +55,12 @@
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'cond-let--when-let
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+(let-completion-register-binding-form 'cond-let--while-let*
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+(let-completion-register-binding-form 'cond-let--while-let
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+
+;; then scope: bindings visible only in the first form after bindings.
 (let-completion-register-binding-form 'cond-let--if-let*
   '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
 (let-completion-register-binding-form 'cond-let--if-let
