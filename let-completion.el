@@ -452,47 +452,52 @@ Called by `let-completion--extract-shape'."
   (save-excursion
     (goto-char (1+ start))
     (let (result)
-      (while (progn (skip-chars-forward " \t\n")
-                    (< (point) (1- end)))
-        (let ((b-start (point)))
-          (condition-case nil
-              (let ((b-end (scan-sexps (point) 1)))
-                (if (<= b-start completion-pos b-end)
-                    (goto-char b-end)
-                  (cond
-                   ;; (VAR EXPR) -- compound binding.
-                   ((eq (char-after b-start) ?\()
-                    (save-excursion
-                      (goto-char (1+ b-start))
-                      (skip-chars-forward " \t\n")
-                      (let ((name-start (point))
-                            (name-end (ignore-errors
-                                        (scan-sexps (point) 1))))
-                        (when name-end
-                          (let* ((name (buffer-substring-no-properties
-                                        name-start name-end))
-                                 (value
-                                  (condition-case nil
-                                      (progn
-                                        (goto-char name-end)
-                                        (skip-chars-forward " \t\n")
-                                        (when (< (point) (1- b-end))
-                                          (let* ((vs (point))
-                                                 (ve (scan-sexps (point) 1)))
-                                            (when ve
-                                              (car (read-from-string
-                                                    (buffer-substring-no-properties
-                                                     vs ve)))))))
-                                    (error nil))))
-                            (push (cons name (cons tag value)) result))))))
-                   ;; Bare symbol.
-                   (t
-                    (let ((name (buffer-substring-no-properties
-                                 b-start b-end)))
-                      (push (cons name (cons tag nil)) result))))
-                  (goto-char b-end)))
-            ;; scan-sexps failed -- bail out.
-            (error (goto-char end)))))
+      (cl-flet
+          ;; Extract name and value from a compound binding (VAR EXPR)
+          ;; between B-START and B-END.  Return (NAME TAG . VALUE) or nil.
+          ((extract-compound (b-start b-end)
+             (save-excursion
+               (goto-char (1+ b-start))
+               (skip-chars-forward " \t\n")
+               (let ((name-start (point))
+                     (name-end (ignore-errors (scan-sexps (point) 1))))
+                 (when name-end
+                   (let ((name (buffer-substring-no-properties
+                                name-start name-end))
+                         (value (condition-case nil
+                                    (progn
+                                      (goto-char name-end)
+                                      (skip-chars-forward " \t\n")
+                                      (when (< (point) (1- b-end))
+                                        (let ((vs (point))
+                                              (ve (scan-sexps (point) 1)))
+                                          (when ve
+                                            (car (read-from-string
+                                                  (buffer-substring-no-properties
+                                                   vs ve)))))))
+                                  (error nil))))
+                     (cons name (cons tag value))))))))
+
+        (while (progn (skip-chars-forward " \t\n")
+                      (< (point) (1- end)))
+          (let ((b-start (point)))
+            (condition-case nil
+                (let ((b-end (scan-sexps (point) 1)))
+                  (if (<= b-start completion-pos b-end)
+                      (goto-char b-end)
+                    (cond
+                     ;; Entry: (VAR EXPR) -- compound binding.
+                     ((eq (char-after b-start) ?\()
+                      (when-let* ((binding (extract-compound b-start b-end)))
+                        (push binding result)))
+                     ;; Entry: bare symbol.
+                     (t
+                      (push (cons (buffer-substring-no-properties
+                                   b-start b-end)
+                                  (cons tag nil))
+                            result)))
+                    (goto-char b-end)))
+              (error (goto-char end))))))
       result)))
 
 (defun let-completion--extract-shape-arglist (start end completion-pos tag
