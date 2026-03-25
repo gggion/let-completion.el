@@ -364,50 +364,58 @@ Called by `let-completion--extract-shape-arglist' and
 `let-completion--extract-defmethod'."
   (save-excursion
     (goto-char (1+ start))
-    (while (progn (skip-chars-forward " \t\n")
-                  (< (point) (1- end)))
-      (let ((inner-start (point)))
-        (condition-case nil
-            (let ((inner-end (scan-sexps (point) 1)))
-              (unless (<= inner-start completion-pos inner-end)
-                (cond
-                 ;; Entry: inner list in &key context is
-                 ;; ((:KEYWORD VAR) ...).  Enter and take second
-                 ;; element as variable name.
-                 ((eq (char-after inner-start) ?\()
-                  (when (string= current-tag "&key")
-                    (save-excursion
-                      (goto-char (1+ inner-start))
-                      ;; Navigate: skip keyword element.
-                      (skip-chars-forward " \t\n")
-                      (ignore-errors (forward-sexp 1))
-                      ;; Navigate: now at VAR position.
-                      (skip-chars-forward " \t\n")
-                      (when (< (point) (1- inner-end))
-                        (let* ((var-start (point))
-                               (var-end (ignore-errors
-                                          (scan-sexps (point) 1))))
-                          (when (and var-end
-                                     (not (eq (char-after var-start) ?\()))
-                            (let ((vname (buffer-substring-no-properties
-                                          var-start var-end)))
-                              (unless (let-completion--arglist-non-binding-p
-                                       vname)
-                                (push (cons vname (cons current-tag nil))
-                                      result)))))))))
-                 ;; Entry: quoted form or string -- skip.
-                 ((memq (char-after inner-start) '(?' ?\"))
-                  nil)
-                 ;; Entry: bare symbol -- collect if it passes the
-                 ;; non-binding filter.
-                 (t
-                  (let ((name (buffer-substring-no-properties
-                               inner-start inner-end)))
-                    (unless (let-completion--arglist-non-binding-p name)
-                      (push (cons name (cons current-tag nil))
-                            result))))))
-              (goto-char inner-end))
-          (error (goto-char end))))))
+    (cl-flet
+        ;; Extract VAR from a nested &key spec like ((:KEYWORD VAR) DEFAULT).
+        ;; Enter the inner list, skip the keyword element, take the second
+        ;; element as variable name.  Return updated RESULT.
+        ((collect-key-var (inner-start inner-end)
+           (save-excursion
+             (goto-char (1+ inner-start))
+             ;; Navigate: skip keyword element.
+             (skip-chars-forward " \t\n")
+             (ignore-errors (forward-sexp 1))
+             ;; Navigate: now at VAR position.
+             (skip-chars-forward " \t\n")
+             (when (< (point) (1- inner-end))
+               (let* ((var-start (point))
+                      (var-end (ignore-errors
+                                 (scan-sexps (point) 1))))
+                 (when (and var-end
+                            (not (eq (char-after var-start) ?\()))
+                   (let ((vname (buffer-substring-no-properties
+                                 var-start var-end)))
+                     (unless (let-completion--arglist-non-binding-p
+                              vname)
+                       (push (cons vname (cons current-tag nil))
+                             result)))))))
+           result))
+      (while (progn (skip-chars-forward " \t\n")
+                    (< (point) (1- end)))
+        (let ((inner-start (point)))
+          (condition-case nil
+              (let ((inner-end (scan-sexps (point) 1)))
+                (unless (<= inner-start completion-pos inner-end)
+                  (cond
+                   ;; Entry: inner list in &key context is
+                   ;; ((:KEYWORD VAR) ...).  Enter and take second
+                   ;; element as variable name.
+                   ((eq (char-after inner-start) ?\()
+                    (when (string= current-tag "&key")
+                      (setq result (collect-key-var inner-start
+                                                    inner-end))))
+                   ;; Entry: quoted form or string -- skip.
+                   ((memq (char-after inner-start) '(?' ?\"))
+                    nil)
+                   ;; Entry: bare symbol -- collect if it passes the
+                   ;; non-binding filter.
+                   (t
+                    (let ((name (buffer-substring-no-properties
+                                 inner-start inner-end)))
+                      (unless (let-completion--arglist-non-binding-p name)
+                        (push (cons name (cons current-tag nil))
+                              result))))))
+                (goto-char inner-end))
+            (error (goto-char end)))))))
   result)
 
 ;;;; Shape Extractors
