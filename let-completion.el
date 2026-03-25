@@ -711,58 +711,61 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
       (unless head-end (cl-return-from let-completion--extract-letf))
       (goto-char head-end)
       (skip-chars-forward " \t\n")
-
       ;; -- Navigate: now at binding list.
       (let ((list-start (point))
             (list-end (ignore-errors (scan-sexps (point) 1))))
-
         ;; -- Scope: binding list must end before completion-pos.
         (unless (and list-end (> completion-pos list-end))
           (cl-return-from let-completion--extract-letf))
         (goto-char (1+ list-start))
-
         ;; -- Walk: iterate entries in binding list.
         (let (result)
-          (while (progn (skip-chars-forward " \t\n")
-                        (< (point) (1- list-end)))
-            (let ((entry-start (point)))
-              (condition-case nil
-                  (let ((entry-end (scan-sexps (point) 1)))
-                    ;; -- Entry: skip if not a list or contains point.
-                    (when (and (eq (char-after entry-start) ?\()
-                               (not (<= entry-start
-                                        completion-pos entry-end)))
-                      (save-excursion
-                        (goto-char (1+ entry-start))
-                        (skip-chars-forward " \t\n")
-                        ;; -- Entry: read PLACE position.
-                        (let ((place-start (point))
-                              (place-end (ignore-errors
-                                           (scan-sexps (point) 1))))
-                          (when (and place-end
-                                     ;; -- Entry: only bare symbols, skip
-                                     ;;    generalized places like (elt v 0).
-                                     (not (eq (char-after place-start) ?\()))
-                            (let* ((name (buffer-substring-no-properties
-                                          place-start place-end))
-                                   ;; -- Entry: extract value via read.
-                                   (value
-                                    (condition-case nil
-                                        (progn
-                                          (goto-char place-end)
-                                          (skip-chars-forward " \t\n")
-                                          (when (< (point) (1- entry-end))
-                                            (let ((vs (point))
-                                                  (ve (scan-sexps (point) 1)))
-                                              (when ve
-                                                (car (read-from-string
-                                                      (buffer-substring-no-properties
-                                                       vs ve)))))))
-                                      (error nil))))
-                              (push (cons name (cons tag value))
-                                    result))))))
-                    (goto-char entry-end))
-                (error (goto-char list-end)))))
+          (cl-labels
+              ;; Read value sexp after PLACE-END, before ENTRY-END.
+              ;; Return parsed value or nil on any failure.
+              ((read-value (place-end entry-end)
+                 (condition-case nil
+                     (progn
+                       (goto-char place-end)
+                       (skip-chars-forward " \t\n")
+                       (when (< (point) (1- entry-end))
+                         (when-let* ((ve (scan-sexps (point) 1)))
+                           (car (read-from-string
+                                 (buffer-substring-no-properties
+                                  (point) ve))))))
+                   (error nil)))
+
+               ;; Extract one binding from entry between ENTRY-START
+               ;; and ENTRY-END.  Return (NAME TAG . VALUE) or nil.
+               (extract-entry (entry-start entry-end)
+                 (save-excursion
+                   (goto-char (1+ entry-start))
+                   (skip-chars-forward " \t\n")
+                   (let ((place-start (point))
+                         (place-end (ignore-errors
+                                      (scan-sexps (point) 1))))
+                     ;; -- Entry: only bare symbols, skip generalized
+                     ;;    places like (symbol-function 'foo).
+                     (when (and place-end
+                                (not (eq (char-after place-start) ?\()))
+                       (cons (buffer-substring-no-properties
+                              place-start place-end)
+                             (cons tag (read-value place-end
+                                                   entry-end))))))))
+            (while (progn (skip-chars-forward " \t\n")
+                          (< (point) (1- list-end)))
+              (let ((entry-start (point)))
+                (condition-case nil
+                    (let ((entry-end (scan-sexps (point) 1)))
+                      ;; -- Entry: process if list and not at point.
+                      (when (and (eq (char-after entry-start) ?\()
+                                 (not (<= entry-start
+                                          completion-pos entry-end)))
+                        (when-let* ((binding (extract-entry entry-start
+                                                            entry-end)))
+                          (push binding result)))
+                      (goto-char entry-end))
+                  (error (goto-char list-end))))))
           result)))))
 
 (cl-defun let-completion--extract-defmethod (pos completion-pos tag)
