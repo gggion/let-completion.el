@@ -487,7 +487,9 @@ Called by `let-completion--extract-shape'."
             (error (goto-char end)))))
       result)))
 
-(defun let-completion--extract-shape-arglist (start end completion-pos tag)
+(defun let-completion--extract-shape-arglist (start end completion-pos tag
+                                                    &optional specializer-tag
+                                                    skip-context)
   "Extract parameter names from an arglist between START and END.
 Skip lambda-list keywords.  For bare symbols, collect directly.
 For compound specs like (VAR DEFAULT SUPPLIED-P), enter the list
@@ -502,15 +504,26 @@ TAG is the base tag string from the registry descriptor, used for
 required parameters.  Lambda-list keywords override it.
 Skip any name whose span contains COMPLETION-POS.
 
+When SPECIALIZER-TAG is non-nil, compound specs where the current
+tag equals SPECIALIZER-TAG are treated as specializers: only the
+first element is collected as a variable name.  This handles
+`cl-defmethod' mandatory parameter specs like (VAR TYPE).
+
+When SKIP-CONTEXT is non-nil, entries after `&context' are skipped
+until the next standard lambda-list keyword.  This handles
+`cl-defmethod' context specifications.
+
 Return alist of (NAME-STRING TAG-STRING . nil).
 
 Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda',
-`cl-destructuring-bind'.
+`cl-destructuring-bind', and indirectly by
+`let-completion--extract-defmethod'.
 Called by `let-completion--extract-shape'."
   (save-excursion
     (goto-char (1+ start))
     (let (result
-          (current-tag tag))
+          (current-tag tag)
+          (in-context nil))
       (while (progn (skip-chars-forward " \t\n")
                     (< (point) (1- end)))
         (let ((sym-start (point)))
@@ -525,8 +538,32 @@ Called by `let-completion--extract-shape'."
                          (let ((name (buffer-substring-no-properties
                                       sym-start sym-end)))
                            (when (string-prefix-p "&" name)
-                             (setq current-tag name)
+                             (if (and skip-context
+                                      (string= name "&context"))
+                                 (setq in-context t
+                                       current-tag name)
+                               (setq in-context nil
+                                     current-tag name))
                              t))))
+                   ;; Entry: in &context -- skip entirely.
+                   (in-context nil)
+                   ;; Entry: compound spec in specializer context --
+                   ;; take first element only.
+                   ((and specializer-tag
+                         (eq (char-after sym-start) ?\()
+                         (string= current-tag specializer-tag))
+                    (save-excursion
+                      (goto-char (1+ sym-start))
+                      (skip-chars-forward " \t\n")
+                      (when-let* ((var-end (ignore-errors
+                                             (scan-sexps (point) 1))))
+                        (unless (eq (char-after (point)) ?\()
+                          (let ((vname (buffer-substring-no-properties
+                                        (point) var-end)))
+                            (unless (let-completion--arglist-non-binding-p
+                                     vname)
+                              (push (cons vname (cons current-tag nil))
+                                    result)))))))
                    ;; Walk: compound spec -- enter and collect symbols.
                    ((eq (char-after sym-start) ?\()
                     (setq result
@@ -598,7 +635,7 @@ Called by `let-completion--extract-shape'."
 
 ;;; Custom Extractor Functions
 
-(defun let-completion--extract-flet (pos completion-pos tag)
+(cl-defun let-completion--extract-flet (pos completion-pos tag)
   "Extract function names from a flet-like form at POS.
 COMPLETION-POS is point.  TAG is the annotation label from the
 registry descriptor.
@@ -617,44 +654,42 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
     (skip-chars-forward " \t\n")
     ;; -- Navigate: skip head symbol.
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
-      (when head-end
-        (goto-char head-end)
-        (skip-chars-forward " \t\n")
-        ;; -- Navigate: now at binding list.
-        (let ((list-start (point))
-              (list-end (ignore-errors (scan-sexps (point) 1))))
-          ;; -- Scope: binding list must end before completion-pos.
-          (when (and list-end
-                     (> completion-pos list-end))
-            (goto-char (1+ list-start))
-            ;; -- Walk: iterate entries in binding list.
-            (let (result)
-              (while (progn (skip-chars-forward " \t\n")
-                            (< (point) (1- list-end)))
-                (let ((entry-start (point)))
-                  (condition-case nil
-                      (let ((entry-end (scan-sexps (point) 1)))
-                        ;; -- Entry: skip if not a list or contains point.
-                        (when (and (eq (char-after entry-start) ?\()
-                                   (not (<= entry-start
-                                             completion-pos entry-end)))
-                          (save-excursion
-                            (goto-char (1+ entry-start))
-                            (skip-chars-forward " \t\n")
-                            ;; -- Entry: extract name (first element).
-                            (let ((name-start (point))
-                                  (name-end (ignore-errors
-                                              (scan-sexps (point) 1))))
-                              (when name-end
-                                (let ((name (buffer-substring-no-properties
-                                             name-start name-end)))
-                                  (push (cons name (cons tag nil))
-                                        result))))))
-                        (goto-char entry-end))
-                    (error (goto-char list-end)))))
-              result)))))))
+      (unless head-end (cl-return-from let-completion--extract-flet))
+      (goto-char head-end)
+      (skip-chars-forward " \t\n")
+      ;; -- Navigate: now at binding list.
+      (let ((list-start (point))
+            (list-end (ignore-errors (scan-sexps (point) 1))))
+        ;; -- Scope: binding list must end before completion-pos.
+        (unless (and list-end (> completion-pos list-end))
+          (cl-return-from let-completion--extract-flet))
+        (goto-char (1+ list-start))
+        ;; -- Walk: iterate entries in binding list.
+        (let (result)
+          (while (progn (skip-chars-forward " \t\n")
+                        (< (point) (1- list-end)))
+            (let ((entry-start (point)))
+              (condition-case nil
+                  (let ((entry-end (scan-sexps (point) 1)))
+                    ;; -- Entry: skip if not a list or contains point.
+                    (when (and (eq (char-after entry-start) ?\()
+                               (not (<= entry-start
+                                        completion-pos entry-end)))
+                      (save-excursion
+                        (goto-char (1+ entry-start))
+                        (skip-chars-forward " \t\n")
+                        ;; -- Entry: extract name (first element).
+                        (when-let* ((name-end (ignore-errors
+                                                (scan-sexps (point) 1))))
+                          (push (cons (buffer-substring-no-properties
+                                       (point) name-end)
+                                      (cons tag nil))
+                                result))))
+                    (goto-char entry-end))
+                (error (goto-char list-end)))))
+          result)))))
 
-(defun let-completion--extract-letf (pos completion-pos tag)
+(cl-defun let-completion--extract-letf (pos completion-pos tag)
   "Extract symbol-place bindings from a letf-like form at POS.
 COMPLETION-POS is point.  TAG is the annotation label from the
 registry descriptor.
@@ -673,76 +708,73 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
     (skip-chars-forward " \t\n")
     ;; -- Navigate: skip head symbol.
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
-      (when head-end
-        (goto-char head-end)
-        (skip-chars-forward " \t\n")
-        ;; -- Navigate: now at binding list.
-        (let ((list-start (point))
-              (list-end (ignore-errors (scan-sexps (point) 1))))
-          ;; -- Scope: binding list must end before completion-pos.
-          (when (and list-end
-                     (> completion-pos list-end))
-            (goto-char (1+ list-start))
-            ;; -- Walk: iterate entries in binding list.
-            (let (result)
-              (while (progn (skip-chars-forward " \t\n")
-                            (< (point) (1- list-end)))
-                (let ((entry-start (point)))
-                  (condition-case nil
-                      (let ((entry-end (scan-sexps (point) 1)))
-                        ;; -- Entry: skip if not a list or contains point.
-                        (when (and (eq (char-after entry-start) ?\()
-                                   (not (<= entry-start
-                                             completion-pos entry-end)))
-                          (save-excursion
-                            (goto-char (1+ entry-start))
-                            (skip-chars-forward " \t\n")
-                            ;; -- Entry: read PLACE position.
-                            (let ((place-start (point))
-                                  (place-end (ignore-errors
-                                               (scan-sexps (point) 1))))
-                              (when place-end
-                                ;; -- Entry: only bare symbols, skip
-                                ;;    generalized places like (elt v 0).
-                                (unless (eq (char-after place-start) ?\()
-                                  (let* ((name (buffer-substring-no-properties
-                                                place-start place-end))
-                                         ;; -- Entry: extract value via read.
-                                         (value
-                                          (condition-case nil
-                                              (progn
-                                                (goto-char place-end)
-                                                (skip-chars-forward " \t\n")
-                                                (when (< (point)
-                                                         (1- entry-end))
-                                                  (let* ((vs (point))
-                                                         (ve (scan-sexps
-                                                              (point) 1)))
-                                                    (when ve
-                                                      (car
-                                                       (read-from-string
-                                                        (buffer-substring-no-properties
-                                                         vs ve)))))))
-                                            (error nil))))
-                                    (push (cons name (cons tag value))
-                                          result)))))))
-                        (goto-char entry-end))
-                    (error (goto-char list-end)))))
-              result)))))))
+      (unless head-end (cl-return-from let-completion--extract-letf))
+      (goto-char head-end)
+      (skip-chars-forward " \t\n")
 
-(defun let-completion--extract-defmethod (pos completion-pos tag)
+      ;; -- Navigate: now at binding list.
+      (let ((list-start (point))
+            (list-end (ignore-errors (scan-sexps (point) 1))))
+
+        ;; -- Scope: binding list must end before completion-pos.
+        (unless (and list-end (> completion-pos list-end))
+          (cl-return-from let-completion--extract-letf))
+        (goto-char (1+ list-start))
+
+        ;; -- Walk: iterate entries in binding list.
+        (let (result)
+          (while (progn (skip-chars-forward " \t\n")
+                        (< (point) (1- list-end)))
+            (let ((entry-start (point)))
+              (condition-case nil
+                  (let ((entry-end (scan-sexps (point) 1)))
+                    ;; -- Entry: skip if not a list or contains point.
+                    (when (and (eq (char-after entry-start) ?\()
+                               (not (<= entry-start
+                                        completion-pos entry-end)))
+                      (save-excursion
+                        (goto-char (1+ entry-start))
+                        (skip-chars-forward " \t\n")
+                        ;; -- Entry: read PLACE position.
+                        (let ((place-start (point))
+                              (place-end (ignore-errors
+                                           (scan-sexps (point) 1))))
+                          (when (and place-end
+                                     ;; -- Entry: only bare symbols, skip
+                                     ;;    generalized places like (elt v 0).
+                                     (not (eq (char-after place-start) ?\()))
+                            (let* ((name (buffer-substring-no-properties
+                                          place-start place-end))
+                                   ;; -- Entry: extract value via read.
+                                   (value
+                                    (condition-case nil
+                                        (progn
+                                          (goto-char place-end)
+                                          (skip-chars-forward " \t\n")
+                                          (when (< (point) (1- entry-end))
+                                            (let ((vs (point))
+                                                  (ve (scan-sexps (point) 1)))
+                                              (when ve
+                                                (car (read-from-string
+                                                      (buffer-substring-no-properties
+                                                       vs ve)))))))
+                                      (error nil))))
+                              (push (cons name (cons tag value))
+                                    result))))))
+                    (goto-char entry-end))
+                (error (goto-char list-end)))))
+          result)))))
+
+(cl-defun let-completion--extract-defmethod (pos completion-pos tag)
   "Extract parameter names from a `cl-defmethod' form at POS.
 COMPLETION-POS is point.  TAG is the annotation label from the
 registry descriptor.
 
 Navigate past the head symbol and method name.  Skip qualifier
 keywords (`:before', `:after', `:around') and `:extra STRING'
-pairs to find the arglist.  Inside the arglist, mandatory
-parameters with compound specs like (VAR TYPE) are specializers
-where only VAR is a binding.  After `&context', skip all entries
-until the next standard lambda-list keyword.  After `&optional',
-`&key', or `&aux', delegate to standard CL compound spec rules
-via `let-completion--collect-cl-compound'.
+pairs to find the arglist.  Delegate the arglist walk to
+`let-completion--extract-shape-arglist' with SPECIALIZER-TAG and
+SKIP-CONTEXT enabled.
 
 Return alist of (NAME-STRING TAG-STRING . nil) or nil.
 
@@ -751,110 +783,42 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
   (save-excursion
     (goto-char (1+ pos))
     (skip-chars-forward " \t\n")
-    ;; Navigate: skip head symbol (cl-defmethod).
+    ;; -- Navigate: skip head symbol (cl-defmethod).
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
-      (when head-end
-        (goto-char head-end)
+      (unless head-end (cl-return-from let-completion--extract-defmethod))
+      (goto-char head-end)
+      (skip-chars-forward " \t\n")
+      ;; -- Navigate: skip method name.
+      (let ((name-end (ignore-errors (scan-sexps (point) 1))))
+        (unless name-end (cl-return-from let-completion--extract-defmethod))
+        (goto-char name-end)
         (skip-chars-forward " \t\n")
-        ;; Navigate: skip method name.
-        (let ((name-end (ignore-errors (scan-sexps (point) 1))))
-          (when name-end
-            (goto-char name-end)
-            (skip-chars-forward " \t\n")
-            ;; Navigate: skip qualifiers and :extra STRING pairs.
-            (while (and (not (eq (char-after) ?\())
-                        (< (point) (point-max)))
-              (let ((q-start (point))
-                    (q-end (ignore-errors (scan-sexps (point) 1))))
-                (unless q-end (cl-return-from
-                               let-completion--extract-defmethod nil))
-                (let ((q-str (buffer-substring-no-properties q-start q-end)))
-                  ;; Navigate: :extra consumes the next sexp too.
-                  (when (string= q-str ":extra")
-                    (goto-char q-end)
-                    (skip-chars-forward " \t\n")
-                    (setq q-end (ignore-errors (scan-sexps (point) 1)))
-                    (unless q-end (cl-return-from
-                                   let-completion--extract-defmethod nil))))
-                (goto-char q-end)
-                (skip-chars-forward " \t\n")))
-            ;; Navigate: now at the arglist.
-            (let ((arglist-start (point))
-                  (arglist-end (ignore-errors (scan-sexps (point) 1))))
-              (when (and arglist-end
-                         (eq (char-after arglist-start) ?\()
-                         (> completion-pos arglist-end))
-
-                ;; Walk: iterate the arglist.
-                (goto-char (1+ arglist-start))
-                (let (result
-                      (current-tag tag)
-                      (in-context nil))
-                  (while (progn (skip-chars-forward " \t\n")
-                                (< (point) (1- arglist-end)))
-                    (let ((sym-start (point)))
-                      (condition-case nil
-                          (let ((sym-end (scan-sexps (point) 1)))
-                            (if (<= sym-start completion-pos sym-end)
-                                (goto-char sym-end)
-                              (cond
-
-                               ;; Navigate: lambda-list keyword.
-                               ((and (not (eq (char-after sym-start) ?\())
-                                     (let ((name
-                                            (buffer-substring-no-properties
-                                             sym-start sym-end)))
-                                       (when (string-prefix-p "&" name)
-                                         (if (string= name "&context")
-                                             (setq in-context t
-                                                   current-tag name)
-                                           (setq in-context nil
-                                                 current-tag name))
-                                         t))))
-
-                               ;; Entry: in &context -- skip entirely.
-                               (in-context nil)
-                               ;; Entry: compound spec in mandatory context
-                               ;; -- specializer, take first element only.
-                               ((and (eq (char-after sym-start) ?\()
-                                     (string= current-tag tag))
-                                (save-excursion
-                                  (goto-char (1+ sym-start))
-                                  (skip-chars-forward " \t\n")
-                                  (let* ((var-start (point))
-                                         (var-end
-                                          (ignore-errors
-                                            (scan-sexps (point) 1))))
-                                    (when (and var-end
-                                              (not (eq (char-after var-start) ?\()))
-                                      (let ((vname
-                                             (buffer-substring-no-properties
-                                              var-start var-end)))
-                                        (unless
-                                            (let-completion--arglist-non-binding-p
-                                             vname)
-                                          (push (cons vname
-                                                      (cons current-tag nil))
-                                                result)))))))
-
-                               ;; Walk: compound spec after &optional/&key/&aux
-                               ;; -- CL rules, delegate to shared collector.
-                               ((eq (char-after sym-start) ?\()
-                                (setq result
-                                      (let-completion--collect-cl-compound
-                                       sym-start sym-end completion-pos
-                                       current-tag result)))
-
-                               ;; Entry: plain parameter name.
-                               (t
-                                (let ((name
-                                       (buffer-substring-no-properties
-                                        sym-start sym-end)))
-                                  (push (cons name (cons current-tag nil))
-                                        result))))
-                              (goto-char sym-end)))
-                        (error (goto-char arglist-end)))))
-                  result)))))))))
+        ;; -- Navigate: skip qualifiers and :extra STRING pairs.
+        (while (and (not (eq (char-after) ?\())
+                    (< (point) (point-max)))
+          (let ((q-start (point))
+                (q-end (ignore-errors (scan-sexps (point) 1))))
+            (unless q-end (cl-return-from let-completion--extract-defmethod))
+            (when (string= (buffer-substring-no-properties q-start q-end)
+                           ":extra")
+              ;; -- Navigate: :extra consumes the next sexp too.
+              (goto-char q-end)
+              (skip-chars-forward " \t\n")
+              (setq q-end (ignore-errors (scan-sexps (point) 1)))
+              (unless q-end
+                (cl-return-from let-completion--extract-defmethod)))
+            (goto-char q-end)
+            (skip-chars-forward " \t\n")))
+        ;; -- Navigate: now at the arglist.
+        (let ((arglist-start (point))
+              (arglist-end (ignore-errors (scan-sexps (point) 1))))
+          (unless (and arglist-end
+                       (eq (char-after arglist-start) ?\()
+                       (> completion-pos arglist-end))
+            (cl-return-from let-completion--extract-defmethod))
+          ;; -- Walk: delegate to arglist extractor with defmethod rules.
+          (let-completion--extract-shape-arglist
+           arglist-start arglist-end completion-pos tag tag t))))))
 
 ;;;; Dispatcher
 
@@ -1005,108 +969,129 @@ Called by `let-completion--advice'."
 ;;;; Advice
 
 (defun let-completion--advice (orig-fn)
-  "Enrich the capf result from ORIG-FN with let-binding metadata.
-Wrap the completion table to merge extracted local names into the
-candidate pool and inject `display-sort-function' into the table's
-metadata response, promoting locals to the top.  Inject
-`:annotation-function' to show tags and values per
-`let-completion-annotation-format', `let-completion-annotation-format-tag',
-and `let-completion-annotation-fallback'.  Inject `:company-doc-buffer'
-to provide full pretty-printed values.  Both fall back to the
-original plist functions for non-local candidates.
+  "Enrich ORIG-FN capf result with locally bound variable names and values.
+ORIG-FN is `elisp-completion-at-point'.
 
-Installed as `:around' advice on `elisp-completion-at-point' by
-`let-completion-mode'.  Removed by disabling the mode."
+Wrap the returned completion table to merge local names, inject
+`display-sort-function' promoting locals above globals, inject
+`:annotation-function' for tag and value display, and inject
+`:company-doc-buffer' for full pretty-printed values.  Both
+annotation and doc-buffer fall back to original plist functions
+for non-local candidates.
+
+Uses `let-completion--binding-values' to extract bindings.
+Uses `let-completion--make-table' to wrap the completion table.
+Uses `let-completion--doc-buffer' for the doc display buffer."
   (let ((result (funcall orig-fn)))
+    ;; Capf protocol: (START END COLLECTION . PLIST).
     (when (and result (listp result) (>= (length result) 3))
       (let* ((vals (let-completion--binding-values))
              (local-names (mapcar #'car vals)))
         (when vals
           (let* ((plist (nthcdr 3 result))
                  (orig-ann (plist-get plist :annotation-function))
-                 (orig-doc (plist-get plist :company-doc-buffer))
-                 (sort-fn (lambda (cands)
-                            (let ((seen (make-hash-table :test #'equal))
-                                  local other)
-                              (dolist (c cands)
-                                (unless (gethash c seen)
-                                  (puthash c t seen)
-                                  (if (member c local-names)
-                                      (push c local)
-                                    (push c other))))
-                              (nconc (nreverse local) (nreverse other))))))
-            (setq result
-                  (append
-                   (list (nth 0 result) (nth 1 result)
-                         (let-completion--make-table (nth 2 result) sort-fn local-names)
-                         :annotation-function
-                         (lambda (c)
-                           (let ((cell (assoc c vals)))
-                             (if cell
-                                 (let* ((tag (cadr cell))
-                                        (val (cddr cell))
-                                        ;; 1. Alist refinement.
-                                        (tag (or (cdr (assoc (cons tag (car-safe val))
-                                                             let-completion-tag-refine-alist))
-                                                 tag))
-                                        ;; 2. Function refinement.
-                                        (tag (if let-completion-tag-refine-function
-                                                 (or (funcall let-completion-tag-refine-function
-                                                              c tag val)
-                                                     tag)
-                                               tag))
-                                        (short
-                                         (and let-completion-inline-max-width
-                                              val
-                                              (let ((s (prin1-to-string val)))
-                                                (and (<= (length s)
-                                                         let-completion-inline-max-width)
-                                                     s))))
-                                        (tag-str
-                                         (and let-completion-annotation-format-tag
-                                              tag
-                                              (format
-                                               let-completion-annotation-format-tag
-                                               tag))))
-                                   (cond
-                                    ((and tag-str short)
-                                     (concat tag-str
-                                             (format
-                                              let-completion-annotation-format
-                                              short)))
-                                    (tag-str tag-str)
-                                    (short
-                                     (format let-completion-annotation-format
-                                             short))
-                                    (t
-                                     (format let-completion-annotation-format
-                                             let-completion-annotation-fallback))))
-                               (when orig-ann (funcall orig-ann c)))))
-                         :company-doc-buffer
-                         (lambda (c)
-                           (let ((cell (assoc c vals)))
-                             (if cell
-                                 (let* ((val (cddr cell))
-                                        (buf (let-completion--doc-buffer)))
-                                   (with-current-buffer buf
-                                     (let ((inhibit-read-only t)
-                                           (print-level nil)
-                                           (print-length nil))
-                                       (erase-buffer)
-                                       (when val
-                                         (let* ((oneline (prin1-to-string val))
-                                                (text (if (> (length oneline) fill-column)
-                                                          (pp-to-string val)
-                                                        oneline)))
-                                           (insert text)))
-                                       (font-lock-ensure)))
-                                   buf)
-                               (when orig-doc (funcall orig-doc c))))))
-                   (cl-loop for (k v) on plist by #'cddr
-                            unless (memq k '(:annotation-function
-                                             :company-doc-buffer
-                                             :display-sort-function))
-                            nconc (list k v))))))))
+                 (orig-doc (plist-get plist :company-doc-buffer)))
+            (cl-flet
+                ;; Tag pipeline: alist refinement -> function refinement.
+                ((refine-tag (tag val c)
+                   (let ((refined
+                          (or (cdr (assoc (cons tag (car-safe val))
+                                         let-completion-tag-refine-alist))
+                              tag)))
+                     (if let-completion-tag-refine-function
+                         (or (funcall let-completion-tag-refine-function
+                                      c refined val)
+                             refined)
+                       refined)))
+
+                 ;; Short printed value or nil when too wide or absent.
+                 (short-value (val)
+                   (and let-completion-inline-max-width val
+                        (let ((s (prin1-to-string val)))
+                          (and (<= (length s)
+                                   let-completion-inline-max-width)
+                               s))))
+
+                 ;; Format tag into bracket annotation or nil if disabled.
+                 (format-tag (tag)
+                   (and let-completion-annotation-format-tag tag
+                        (format let-completion-annotation-format-tag tag)))
+
+                 ;; Combine tag and short value into one annotation string.
+                 ;; Priority: tag+short > tag > short > fallback.
+                 (format-ann (tag-str short)
+                   (cond
+                    ((and tag-str short)
+                     (concat tag-str
+                             (format let-completion-annotation-format short)))
+                    (tag-str tag-str)
+                    (short
+                     (format let-completion-annotation-format short))
+                    (t
+                     (format let-completion-annotation-format
+                             let-completion-annotation-fallback))))
+
+                 ;; Render full value into reusable doc buffer.
+                 ;; Wide values use pp-to-string for readability.
+                 ;; Rebind print-level and print-length to nil to
+                 ;; deal with corfu-popupinfo truncating bindings.
+                 (render-doc (val)
+                   (let ((buf (let-completion--doc-buffer)))
+                     (with-current-buffer buf
+                       (let ((inhibit-read-only t)
+                             (print-level nil)
+                             (print-length nil))
+                         (erase-buffer)
+                         (when val
+                           (let ((s (prin1-to-string val)))
+                             (insert (if (> (length s) fill-column)
+                                        (pp-to-string val)
+                                      s))))
+                         (font-lock-ensure)))
+                     buf)))
+
+              (let ((sort-fn
+                     ;; Hash deduplicates; completion-table-merge can
+                     ;; produce duplicates when a local shadows a global.
+                     (lambda (cands)
+                       (let ((seen (make-hash-table :test #'equal))
+                             local other)
+                         (dolist (c cands)
+                           (unless (gethash c seen)
+                             (puthash c t seen)
+                             (if (member c local-names)
+                                 (push c local)
+                               (push c other))))
+                         (nconc (nreverse local) (nreverse other)))))
+
+                    (ann-fn
+                     (lambda (c)
+                       (if-let* ((cell (assoc c vals)))
+                           (let* ((tag (refine-tag (cadr cell) (cddr cell) c))
+                                  (short (short-value (cddr cell))))
+                             (format-ann (format-tag tag) short))
+                         (when orig-ann (funcall orig-ann c)))))
+
+                    (doc-fn
+                     (lambda (c)
+                       (if-let* ((cell (assoc c vals)))
+                           (render-doc (cddr cell))
+                         (when orig-doc (funcall orig-doc c))))))
+
+                ;; nconc is safe: both halves are freshly allocated.
+                ;; Filter replaced keys from the original plist.
+                (setq result
+                      (nconc
+                       (list (nth 0 result) (nth 1 result)
+                             (let-completion--make-table
+                              (nth 2 result) sort-fn local-names)
+                             :annotation-function ann-fn
+                             :company-doc-buffer doc-fn)
+                       (cl-loop for (k v) on plist by #'cddr
+                                unless (memq k '(:annotation-function
+                                                 :company-doc-buffer
+                                                 :display-sort-function))
+                                nconc (list k v))))))))))
     result))
 
 ;;;; Minor Mode
