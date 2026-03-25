@@ -320,14 +320,14 @@ Called by `let-completion--extract-by-spec'."
      (and (> completion-pos bindings-end)
           (save-excursion
             (goto-char bindings-end)
-            (skip-chars-forward " \t\n")
+            (forward-comment (buffer-size))
             (let ((then-end (ignore-errors (scan-sexps (point) 1))))
               (or (null then-end)
                   (<= completion-pos then-end))))))
     ('handlers
      (save-excursion
        (goto-char bindings-end)
-       (skip-chars-forward " \t\n")
+       (forward-comment (buffer-size))
        ;; Skip the protected expression.
        (let ((protected-end (ignore-errors (scan-sexps (point) 1))))
          (and protected-end
@@ -372,10 +372,10 @@ Called by `let-completion--extract-shape-arglist' and
            (save-excursion
              (goto-char (1+ inner-start))
              ;; Navigate: skip keyword element.
-             (skip-chars-forward " \t\n")
+             (forward-comment (buffer-size))
              (ignore-errors (forward-sexp 1))
              ;; Navigate: now at VAR position.
-             (skip-chars-forward " \t\n")
+             (forward-comment (buffer-size))
              (when (< (point) (1- inner-end))
                (let* ((var-start (point))
                       (var-end (ignore-errors
@@ -389,7 +389,7 @@ Called by `let-completion--extract-shape-arglist' and
                        (push (cons vname (cons current-tag nil))
                              result)))))))
            result))
-      (while (progn (skip-chars-forward " \t\n")
+      (while (progn (forward-comment (buffer-size))
                     (< (point) (1- end)))
         (let ((inner-start (point)))
           (condition-case nil
@@ -458,7 +458,7 @@ Called by `let-completion--extract-shape'."
           ((extract-compound (b-start b-end)
              (save-excursion
                (goto-char (1+ b-start))
-               (skip-chars-forward " \t\n")
+               (forward-comment (buffer-size))
                (let ((name-start (point))
                      (name-end (ignore-errors (scan-sexps (point) 1))))
                  (when name-end
@@ -467,7 +467,7 @@ Called by `let-completion--extract-shape'."
                          (value (condition-case nil
                                     (progn
                                       (goto-char name-end)
-                                      (skip-chars-forward " \t\n")
+                                      (forward-comment (buffer-size))
                                       (when (< (point) (1- b-end))
                                         (let ((vs (point))
                                               (ve (scan-sexps (point) 1)))
@@ -478,7 +478,7 @@ Called by `let-completion--extract-shape'."
                                   (error nil))))
                      (cons name (cons tag value))))))))
 
-        (while (progn (skip-chars-forward " \t\n")
+        (while (progn (forward-comment (buffer-size))
                       (< (point) (1- end)))
           (let ((b-start (point)))
             (condition-case nil
@@ -537,7 +537,7 @@ Called by `let-completion--extract-shape'."
     (let (result
           (current-tag tag)
           (in-context nil))
-      (while (progn (skip-chars-forward " \t\n")
+      (while (progn (forward-comment (buffer-size))
                     (< (point) (1- end)))
         (let ((sym-start (point)))
           (condition-case nil
@@ -567,7 +567,7 @@ Called by `let-completion--extract-shape'."
                          (string= current-tag specializer-tag))
                     (save-excursion
                       (goto-char (1+ sym-start))
-                      (skip-chars-forward " \t\n")
+                      (forward-comment (buffer-size))
                       (when-let* ((var-end (ignore-errors
                                              (scan-sexps (point) 1))))
                         (unless (eq (char-after (point)) ?\()
@@ -609,7 +609,7 @@ Called by `let-completion--extract-shape'."
       nil
     (save-excursion
       (goto-char (1+ start))
-      (skip-chars-forward " \t\n")
+      (forward-comment (buffer-size))
       (let ((name-start (point))
             (name-end (ignore-errors (scan-sexps (point) 1))))
         (when name-end
@@ -618,7 +618,7 @@ Called by `let-completion--extract-shape'."
                  (value (condition-case nil
                             (progn
                               (goto-char name-end)
-                              (skip-chars-forward " \t\n")
+                              (forward-comment (buffer-size))
                               (when (< (point) (1- end))
                                 (let* ((vs (point))
                                        (ve (scan-sexps (point) 1)))
@@ -664,12 +664,12 @@ Used for `cl-flet', `cl-labels', `cl-macrolet'.
 Called by `let-completion--extract-bindings-at' via `:extractor'."
   (save-excursion
     (goto-char (1+ pos))
-    (skip-chars-forward " \t\n")
+    (forward-comment (buffer-size))
     ;; -- Navigate: skip head symbol.
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
       (unless head-end (cl-return-from let-completion--extract-flet))
       (goto-char head-end)
-      (skip-chars-forward " \t\n")
+      (forward-comment (buffer-size))
       ;; -- Navigate: now at binding list.
       (let ((list-start (point))
             (list-end (ignore-errors (scan-sexps (point) 1))))
@@ -679,7 +679,7 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
         (goto-char (1+ list-start))
         ;; -- Walk: iterate entries in binding list.
         (let (result)
-          (while (progn (skip-chars-forward " \t\n")
+          (while (progn (forward-comment (buffer-size))
                         (< (point) (1- list-end)))
             (let ((entry-start (point)))
               (condition-case nil
@@ -690,7 +690,7 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                                         completion-pos entry-end)))
                       (save-excursion
                         (goto-char (1+ entry-start))
-                        (skip-chars-forward " \t\n")
+                        (forward-comment (buffer-size))
                         ;; -- Entry: extract name (first element).
                         (when-let* ((name-end (ignore-errors
                                                 (scan-sexps (point) 1))))
@@ -718,12 +718,12 @@ Used for `cl-letf', `cl-letf*'.
 Called by `let-completion--extract-bindings-at' via `:extractor'."
   (save-excursion
     (goto-char (1+ pos))
-    (skip-chars-forward " \t\n")
+    (forward-comment (buffer-size))
     ;; -- Navigate: skip head symbol.
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
       (unless head-end (cl-return-from let-completion--extract-letf))
       (goto-char head-end)
-      (skip-chars-forward " \t\n")
+      (forward-comment (buffer-size))
       ;; -- Navigate: now at binding list.
       (let ((list-start (point))
             (list-end (ignore-errors (scan-sexps (point) 1))))
@@ -740,7 +740,7 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                  (condition-case nil
                      (progn
                        (goto-char place-end)
-                       (skip-chars-forward " \t\n")
+                       (forward-comment (buffer-size))
                        (when (< (point) (1- entry-end))
                          (when-let* ((ve (scan-sexps (point) 1)))
                            (car (read-from-string
@@ -753,7 +753,7 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                (extract-entry (entry-start entry-end)
                  (save-excursion
                    (goto-char (1+ entry-start))
-                   (skip-chars-forward " \t\n")
+                   (forward-comment (buffer-size))
                    (let ((place-start (point))
                          (place-end (ignore-errors
                                       (scan-sexps (point) 1))))
@@ -765,7 +765,7 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                               place-start place-end)
                              (cons tag (read-value place-end
                                                    entry-end))))))))
-            (while (progn (skip-chars-forward " \t\n")
+            (while (progn (forward-comment (buffer-size))
                           (< (point) (1- list-end)))
               (let ((entry-start (point)))
                 (condition-case nil
@@ -798,17 +798,17 @@ Used for `cl-defmethod'.
 Called by `let-completion--extract-bindings-at' via `:extractor'."
   (save-excursion
     (goto-char (1+ pos))
-    (skip-chars-forward " \t\n")
+    (forward-comment (buffer-size))
     ;; -- Navigate: skip head symbol (cl-defmethod).
     (let ((head-end (ignore-errors (scan-sexps (point) 1))))
       (unless head-end (cl-return-from let-completion--extract-defmethod))
       (goto-char head-end)
-      (skip-chars-forward " \t\n")
+      (forward-comment (buffer-size))
       ;; -- Navigate: skip method name.
       (let ((name-end (ignore-errors (scan-sexps (point) 1))))
         (unless name-end (cl-return-from let-completion--extract-defmethod))
         (goto-char name-end)
-        (skip-chars-forward " \t\n")
+        (forward-comment (buffer-size))
         ;; -- Navigate: skip qualifiers and :extra STRING pairs.
         (while (and (not (eq (char-after) ?\())
                     (< (point) (point-max)))
@@ -819,12 +819,12 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                            ":extra")
               ;; -- Navigate: :extra consumes the next sexp too.
               (goto-char q-end)
-              (skip-chars-forward " \t\n")
+              (forward-comment (buffer-size))
               (setq q-end (ignore-errors (scan-sexps (point) 1)))
               (unless q-end
                 (cl-return-from let-completion--extract-defmethod)))
             (goto-char q-end)
-            (skip-chars-forward " \t\n")))
+            (forward-comment (buffer-size))))
         ;; -- Navigate: now at the arglist.
         (let ((arglist-start (point))
               (arglist-end (ignore-errors (scan-sexps (point) 1))))
@@ -854,7 +854,7 @@ Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
 Called by `let-completion--binding-values'."
   (save-excursion
     (goto-char (1+ pos))
-    (skip-chars-forward " \t\n")
+    (forward-comment (buffer-size))
     ;; -- Navigate: read head symbol.
     (let* ((head-start (point))
            (head-end (ignore-errors (scan-sexps (point) 1))))
@@ -900,10 +900,10 @@ Called by `let-completion--extract-bindings-at'."
       ;; idx 1 means the next sexp after head, idx 2 means skip one more.
       (condition-case nil
           (dotimes (_ (1- idx))
-            (skip-chars-forward " \t\n")
+            (forward-comment (buffer-size))
             (forward-sexp 1))
         (scan-error nil))
-      (skip-chars-forward " \t\n")
+      (forward-comment (buffer-size))
       (let ((bindings-start (point))
             (bindings-end (ignore-errors (scan-sexps (point) 1))))
         (when (and bindings-end
