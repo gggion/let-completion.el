@@ -114,22 +114,27 @@ Also see `let-completion-mode'."
   :type '(choice natnum (const :tag "Disable" nil)))
 
 (defcustom let-completion-tag-refine-alist nil
-  "Alist mapping (TAG . VALUE-HEAD) to replacement tag strings.
-Each key is a cons of (TAG-STRING . SYMBOL-OR-NIL) where
-SYMBOL-OR-NIL is the `car-safe' of the binding value.  When a
-binding's tag and value head match a key, the associated string
-replaces the tag.
+  "Alist mapping (HEAD-SYMBOL . VALUE-HEAD) to replacement tag strings.
+Each key is a cons of (SYMBOL . SYMBOL-OR-NIL) where the car is the
+binding form head symbol (e.g. `let*', `defun') and the cdr is the
+`car-safe' of the binding value.  When a binding's head symbol and
+value head match a key, the associated string replaces the tag.
 
-Consulted before `let-completion-tag-refine-function'.  First
-match wins.
+When this alist matches, the kind suffix from
+`let-completion-tag-kind-alist' is not appended.  The replacement
+string is the complete tag.
+
+Consulted before `let-completion-tag-kind-alist' and
+`let-completion-tag-refine-function'.  First match wins.
 
 Example:
 
-    \\='(((\"let\" . lambda) . \"λ let\")
-      ((\"arg\" . lambda) . \"LAMBDA arg\"))
+    \\='(((let* . lambda) . \"l*::λ\")
+      ((defun . nil)   . \"fn\"))
 
-Also see `let-completion-tag-refine-function'."
-  :type '(alist :key-type (cons string symbol)
+Also see `let-completion-tag-kind-alist' and
+`let-completion-tag-refine-function'."
+  :type '(alist :key-type (cons symbol symbol)
                 :value-type string))
 
 (defcustom let-completion-tag-refine-function nil
@@ -166,9 +171,14 @@ Each entry is (VALUE-HEAD . SUFFIX-STRING) where VALUE-HEAD is
 the `car-safe' of the binding value sexp.  When a binding's value
 head matches, SUFFIX-STRING is appended to the provenance tag.
 
-Applied after `let-completion-tag-alist' (stage 0) and registry
-`:tag' (stage 1), but before `let-completion-tag-refine-alist'
-(stage 2) and `let-completion-tag-refine-function' (stage 3).
+Skipped when `let-completion-tag-refine-alist' already matched
+for the same binding, since the refine alist produces the
+complete replacement tag.
+
+Applied after `let-completion-tag-alist' (stage 1) and registry
+`:tag' (stage 1), and after `let-completion-tag-refine-alist'
+(stage 2) did not match.  Runs before
+`let-completion-tag-refine-function' (stage 4).
 
 Example:
 
@@ -934,7 +944,8 @@ with (POS COMPLETION-POS TAG) where TAG is resolved from
 `let-completion-tag-alist' first, then the `:tag' key.
 Otherwise dispatch via `let-completion--extract-by-spec'.
 
-Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
+Each returned entry has the structure
+\(NAME-STRING HEAD-SYMBOL TAG-STRING . VALUE-OR-NIL).
 
 Called by `let-completion--binding-values'."
   (save-excursion
@@ -955,12 +966,19 @@ Called by `let-completion--binding-values'."
             (let ((tag (or (alist-get head-sym let-completion-tag-alist)
                            (plist-get spec :tag))))
               ;; -- Dispatch: extractor function or standard plist.
-              (let ((extractor (plist-get spec :extractor)))
-                (if extractor
-                    (funcall extractor pos completion-pos tag)
-                  (let-completion--extract-by-spec
-                   pos completion-pos head-end
-                   (plist-put (copy-sequence spec) :tag tag)))))))))))
+              (let* ((extractor (plist-get spec :extractor))
+                     (bindings (if extractor
+                                   (funcall extractor pos completion-pos tag)
+                                 (let-completion--extract-by-spec
+                                  pos completion-pos head-end
+                                  (plist-put (copy-sequence spec) :tag tag)))))
+                ;; -- Attach: inject head-sym into each entry.
+                ;; Extractor returns (NAME TAG . VALUE).
+                ;; Convert to (NAME HEAD-SYM TAG . VALUE).
+                (mapcar (lambda (entry)
+                          (cons (car entry)
+                                (cons head-sym (cdr entry))))
+                        bindings)))))))))
 
 (defun let-completion--extract-by-spec (pos completion-pos head-end spec)
   "Extract bindings from form at POS according to SPEC.
@@ -1097,21 +1115,25 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                  (orig-ann (plist-get plist :annotation-function))
                  (orig-doc (plist-get plist :company-doc-buffer)))
             (cl-labels
-                ;; Tag pipeline: kind append -> alist refinement ->
-                ;; function refinement.
-                ((refine-tag (tag val c)
-                   (let* ((kind (cdr (assq (car-safe val)
-                                           let-completion-tag-kind-alist)))
-                          (tag (if kind (concat tag kind) tag))
-                          (refined
-                           (or (cdr (assoc (cons tag (car-safe val))
-                                          let-completion-tag-refine-alist))
-                               tag)))
+                ;; Tag pipeline:
+                ;; Stage 2: refine alist on (head-sym . value-head).
+                ;; Stage 3: kind suffix append (skipped if stage 2 matched).
+                ;; Stage 4: function refinement.
+                ((refine-tag (head-sym tag val c)
+                   (let* ((value-head (car-safe val))
+                          (refine-key (cons head-sym value-head))
+                          (refined (cdr (assoc refine-key
+                                               let-completion-tag-refine-alist)))
+                          (tag (if refined
+                                   refined
+                                 (let ((kind (cdr (assq value-head
+                                                        let-completion-tag-kind-alist))))
+                                   (if kind (concat tag kind) tag)))))
                      (if let-completion-tag-refine-function
                          (or (funcall let-completion-tag-refine-function
-                                      c refined val)
-                             refined)
-                       refined)))
+                                      c tag val)
+                             tag)
+                       tag)))
 
                  ;; Resolve face for a refined tag string.
                  (face-for-tag (tag)
@@ -1190,15 +1212,20 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                     (ann-fn
                      (lambda (c)
                        (if-let* ((cell (assoc c vals)))
-                           (let* ((tag (refine-tag (cadr cell) (cddr cell) c))
-                                  (short (short-value (cddr cell))))
+                           ;; cell: (NAME HEAD-SYM TAG . VALUE)
+                           (let* ((head-sym (cadr cell))
+                                  (tag (caddr cell))
+                                  (val (cdddr cell))
+                                  (tag (refine-tag head-sym tag val c))
+                                  (short (short-value val)))
                              (format-ann (format-tag tag) short))
                          (when orig-ann (funcall orig-ann c)))))
 
                     (doc-fn
                      (lambda (c)
                        (if-let* ((cell (assoc c vals)))
-                           (render-doc (cddr cell))
+                           ;; cell: (NAME HEAD-SYM TAG . VALUE)
+                           (render-doc (cdddr cell))
                          (when orig-doc (funcall orig-doc c))))))
 
                 ;; nconc is safe: both halves are freshly allocated.
