@@ -50,6 +50,22 @@
 
 (require 'cl-lib)
 
+
+;;;; Faces
+
+(defface let-completion-tag '((t :inherit completions-annotations))
+  "Default face for tag annotations.
+Used when no more specific face matches via
+`let-completion-tag-face-alist'."
+  :group 'let-completion)
+
+(defface let-completion-value '((t :inherit completions-annotations))
+  "Face for inline value annotations.
+Applied to the printed value shown next to the candidate.
+Deliberately understated so values do not compete with tags
+for visual attention."
+  :group 'let-completion)
+
 ;;;; Customization
 
 (defgroup let-completion nil
@@ -144,6 +160,65 @@ Example:
       (condition-case . \"rescue\"))"
   :type '(alist :key-type symbol :value-type string))
 
+(defcustom let-completion-tag-kind-alist nil
+  "Alist mapping value heads to kind suffix strings.
+Each entry is (VALUE-HEAD . SUFFIX-STRING) where VALUE-HEAD is
+the `car-safe' of the binding value sexp.  When a binding's value
+head matches, SUFFIX-STRING is appended to the provenance tag.
+
+Applied after `let-completion-tag-alist' (stage 0) and registry
+`:tag' (stage 1), but before `let-completion-tag-refine-alist'
+(stage 2) and `let-completion-tag-refine-function' (stage 3).
+
+Example:
+
+    \\='((lambda          . \"·λ\")
+      (function         . \"·𝘧\")
+      (make-hash-table  . \"·#\")
+      (quote            . \"·\\='\"))
+
+Also see `let-completion-tag-refine-alist'."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'let-completion)
+
+(defcustom let-completion-tag-face 'let-completion-tag
+  "Default face for tag annotations.
+Applied to the formatted tag string produced by
+`let-completion-annotation-format-tag'.  When nil, no face is
+applied and the tag inherits whatever face the completion UI
+assigns.
+
+Overridden on a per-tag basis by `let-completion-tag-face-alist'.
+
+Also see `let-completion-value-face'."
+  :type '(choice face (const :tag "Disable" nil)))
+
+(defcustom let-completion-tag-face-alist nil
+  "Alist mapping tag strings to faces.
+Each entry is (TAG-STRING . FACE).  TAG-STRING is matched against
+the final tag after all refinement stages
+\(`let-completion-tag-alist', `let-completion-tag-refine-alist',
+`let-completion-tag-refine-function').
+
+When a tag matches an entry, the associated face is used instead
+of `let-completion-tag-face'.  First match wins.
+
+Example:
+
+    \\='((\"let\" . bold)
+      (\"err\" . warning)
+      (\"arg\" . italic))
+
+Also see `let-completion-tag-face'."
+  :type '(alist :key-type string :value-type face))
+
+(defcustom let-completion-value-face 'let-completion-value
+  "Face for inline value annotations.
+Applied to the formatted value string when displayed inline next
+to the candidate.  When nil, no face is applied.
+
+Also see `let-completion-tag-face'."
+  :type '(choice face (const :tag "Disable" nil)))
 ;;;; Binding Form Registry
 
 (defvar-local let-completion-binding-forms nil
@@ -204,7 +279,7 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'cl-do*
   '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
 (let-completion-register-binding-form 'cl-symbol-macrolet
-  '(:bindings-index 1 :binding-shape list :scope body :tag "symm"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "sym"))
 (let-completion-register-binding-form 'with-slots
   '(:bindings-index 1 :binding-shape list :scope body :tag "slot"))
 
@@ -228,9 +303,9 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'cl-multiple-value-bind
   '(:bindings-index 1 :binding-shape arglist :scope body :tag "mv"))
 (let-completion-register-binding-form 'cl-with-gensyms
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "sym"))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "gen"))
 (let-completion-register-binding-form 'cl-once-only
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "sym"))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "gen"))
 
 ;; Index 2, body scope.
 (let-completion-register-binding-form 'defun
@@ -257,17 +332,17 @@ Return SPEC or nil."
 ;;;;;; single shape: (VAR EXPR) one binding
 
 (let-completion-register-binding-form 'dolist
-  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
 (let-completion-register-binding-form 'dotimes
-  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
 (let-completion-register-binding-form 'cl-do-symbols
-  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
 (let-completion-register-binding-form 'cl-do-all-symbols
-  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
 (let-completion-register-binding-form 'dolist-with-progress-reporter
-  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
 (let-completion-register-binding-form 'dotimes-with-progress-reporter
-  '(:bindings-index 1 :binding-shape single :scope body :tag "var"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
 
 ;;;;;; error-var shape: bare symbol
 
@@ -286,14 +361,16 @@ Return SPEC or nil."
 
 (let-completion-register-binding-form 'cl-flet
   '(:extractor let-completion--extract-flet :tag "fn"))
+(let-completion-register-binding-form 'cl-flet*
+  '(:extractor let-completion--extract-flet :tag "fn*"))
 (let-completion-register-binding-form 'cl-labels
-  '(:extractor let-completion--extract-flet :tag "fn"))
+  '(:extractor let-completion--extract-flet :tag "fn**"))
 (let-completion-register-binding-form 'cl-macrolet
   '(:extractor let-completion--extract-flet :tag "mac"))
 (let-completion-register-binding-form 'cl-letf
-  '(:extractor let-completion--extract-letf :tag "letf"))
+  '(:extractor let-completion--extract-letf :tag "place"))
 (let-completion-register-binding-form 'cl-letf*
-  '(:extractor let-completion--extract-letf :tag "letf"))
+  '(:extractor let-completion--extract-letf :tag "place*"))
 (let-completion-register-binding-form 'cl-defmethod
   '(:extractor let-completion--extract-defmethod :tag "arg"))
 
@@ -1003,6 +1080,10 @@ Wrap the returned completion table to merge local names, inject
 annotation and doc-buffer fall back to original plist functions
 for non-local candidates.
 
+Tag and value strings are propertized with faces from
+`let-completion-tag-face', `let-completion-tag-face-alist', and
+`let-completion-value-face' before display.
+
 Uses `let-completion--binding-values' to extract bindings.
 Uses `let-completion--make-table' to wrap the completion table.
 Uses `let-completion--doc-buffer' for the doc display buffer."
@@ -1015,34 +1096,52 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
           (let* ((plist (nthcdr 3 result))
                  (orig-ann (plist-get plist :annotation-function))
                  (orig-doc (plist-get plist :company-doc-buffer)))
-            (cl-flet
-                ;; Tag pipeline: alist refinement -> function refinement.
+            (cl-labels
+                ;; Tag pipeline: kind append -> alist refinement ->
+                ;; function refinement.
                 ((refine-tag (tag val c)
-                   (let ((refined
-                          (or (cdr (assoc (cons tag (car-safe val))
-                                         let-completion-tag-refine-alist))
-                              tag)))
+                   (let* ((kind (cdr (assq (car-safe val)
+                                           let-completion-tag-kind-alist)))
+                          (tag (if kind (concat tag kind) tag))
+                          (refined
+                           (or (cdr (assoc (cons tag (car-safe val))
+                                          let-completion-tag-refine-alist))
+                               tag)))
                      (if let-completion-tag-refine-function
                          (or (funcall let-completion-tag-refine-function
                                       c refined val)
                              refined)
                        refined)))
 
+                 ;; Resolve face for a refined tag string.
+                 (face-for-tag (tag)
+                   (or (cdr (assoc tag let-completion-tag-face-alist))
+                       let-completion-tag-face))
+
+                 ;; Format tag into bracket annotation with face,
+                 ;; or nil if disabled.
+                 (format-tag (tag)
+                   (and let-completion-annotation-format-tag tag
+                        (let ((s (format let-completion-annotation-format-tag
+                                         tag))
+                              (face (face-for-tag tag)))
+                          (if face (propertize s 'face face) s))))
+
                  ;; Short printed value or nil when too wide or absent.
+                 ;; Apply value face when present.
                  (short-value (val)
                    (and let-completion-inline-max-width val
                         (let ((s (prin1-to-string val)))
                           (and (<= (length s)
                                    let-completion-inline-max-width)
-                               s))))
+                               (if let-completion-value-face
+                                   (propertize s 'face
+                                               let-completion-value-face)
+                                 s)))))
 
-                 ;; Format tag into bracket annotation or nil if disabled.
-                 (format-tag (tag)
-                   (and let-completion-annotation-format-tag tag
-                        (format let-completion-annotation-format-tag tag)))
-
-                 ;; Combine tag and short value into one annotation string.
-                 ;; Priority: tag+short > tag > short > fallback.
+                 ;; Combine tag and short value into one annotation
+                 ;; string.  Priority: tag+short > tag > short >
+                 ;; fallback.
                  (format-ann (tag-str short)
                    (cond
                     ((and tag-str short)
