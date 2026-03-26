@@ -353,7 +353,8 @@ Called by `let-completion--extract-shape-arglist'."
 Walk inner elements of a compound spec like (VAR DEFAULT SVAR).
 Bare symbols passing `let-completion--arglist-non-binding-p' are
 collected.  Quoted forms and strings are skipped.  Nested lists in
-`&key' context are entered to extract ((:KEYWORD VAR) ...) specs.
+`&key' context are entered via the local helper `collect-key-var'
+to extract ((:KEYWORD VAR) ...) specs.
 
 COMPLETION-POS is point.  CURRENT-TAG is the active tag string.
 RESULT is the accumulator list, modified destructively via `push'.
@@ -444,6 +445,10 @@ Called by `let-completion--extract-by-spec'."
 Handle ((VAR EXPR) ...) and bare (VAR ...) entries.
 TAG is the base tag string from the registry descriptor.
 Skip any binding whose span contains COMPLETION-POS.
+
+Compound entries are processed by the local helper `extract-compound',
+which extracts the name via `scan-sexps' and the value via
+`read-from-string' with silent fallback to nil.
 
 Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL).
 
@@ -641,8 +646,7 @@ Used for `condition-case'.
 Called by `let-completion--extract-shape'."
   (if (<= start completion-pos end)
       nil
-    (let ((name (string-trim
-                 (buffer-substring-no-properties start end))))
+    (let ((name (buffer-substring-no-properties start end)))
       (unless (or (string-empty-p name) (string= name "nil"))
         (list (cons name (cons tag nil)))))))
 
@@ -710,7 +714,11 @@ registry descriptor.
 Walk the binding list at index 1.  Each entry has the structure
 \(PLACE VALUE).  Only entries where PLACE is a bare symbol (not a
 generalized place like (symbol-function \\='foo)) produce bindings.
-Value is extracted via `read-from-string' with silent fallback to nil.
+
+Entry processing is split into two local helpers: `extract-entry'
+navigates into each binding and filters non-symbol places,
+`read-value' parses the value via `read-from-string' with silent
+fallback to nil.
 
 Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
 
