@@ -66,6 +66,19 @@ Deliberately understated so values do not compete with tags
 for visual attention."
   :group 'let-completion)
 
+(defface let-completion-separator '((t :inherit shadow))
+  "Face for the separator between provenance tag and kind suffix.
+Applied to the `let-completion-tag-kind-separator' string when
+composing tags from `let-completion-tag-kind-alist'."
+  :group 'let-completion)
+
+(defface let-completion-kind '((t :inherit font-lock-type-face))
+  "Face for the kind suffix in composed tags.
+Applied to the kind portion appended from
+`let-completion-tag-kind-alist'.  Visually distinguishes the
+value-type indicator from the provenance tag."
+  :group 'let-completion)
+
 ;;;; Customization
 
 (defgroup let-completion nil
@@ -103,6 +116,32 @@ Also see `let-completion-annotation-format' and
 `let-completion-annotation-format-tag'."
   :type 'string)
 
+(defcustom let-completion-tag-kind-separator "::"
+  "Separator inserted between provenance tag and kind suffix.
+Used when `let-completion-tag-kind-alist' appends a kind suffix
+to the base tag.  Set to nil to concatenate without separator.
+
+Also see `let-completion-tag-kind-alist'."
+  :type '(choice string (const :tag "No separator" nil))
+  :group 'let-completion)
+
+(defcustom let-completion-tag-context-format nil
+  "Format string for appending context to tags.
+When non-nil, a format string receiving one argument: the context
+string (e.g. the enclosing function name).  The formatted result
+is appended to the tag after kind suffix composition (stage 3)
+and before function refinement (stage 4).
+
+When nil, context is not displayed in tags.  Context is still
+available to refine functions via their optional fourth argument.
+
+Example: \"←%s\" produces tags like \"arg←my-function\".
+
+Also see `let-completion-tag-kind-separator' and
+`let-completion-tag-refine-functions'."
+  :type '(choice string (const :tag "Disable" nil))
+  :group 'let-completion)
+
 (defcustom let-completion-inline-max-width 5
   "Max printed width for inline value annotation, or nil to disable.
 Only binding values whose `prin1-to-string' form fits within this
@@ -137,18 +176,29 @@ Also see `let-completion-tag-kind-alist' and
   :type '(alist :key-type (cons symbol symbol)
                 :value-type string))
 
-(defcustom let-completion-tag-refine-function nil
-  "Function to refine tag strings based on binding context.
-Receives three arguments: NAME (string), TAG (string), and VALUE
-\(the raw sexp or nil).  Returns a replacement tag string.
-Return nil to keep the original TAG.
+(defcustom let-completion-tag-refine-functions nil
+  "List of functions to refine tag strings based on binding context.
+Each function receives three or four arguments: NAME (string), TAG
+\(string), VALUE (the raw sexp or nil), and optionally CONTEXT
+\(string or nil, the enclosing function name for arglist bindings).
+Return a replacement tag string to transform the tag, or nil to
+pass it unchanged to the next function.
 
-This function runs after `let-completion-tag-refine-alist' is
-consulted.  Use it for context-dependent logic that the alist
-cannot express.
+Functions that accept only three arguments are called with three
+arguments via fallback when four-argument invocation signals
+`wrong-number-of-arguments'.
 
-Also see `let-completion-tag-refine-alist'."
-  :type '(choice function (const :tag "Disable" nil)))
+Functions run in order.  Each function receives the tag as
+modified by all previous functions.  The final tag after all
+functions is used for display.
+
+This list runs after `let-completion-tag-refine-alist' and
+`let-completion-tag-kind-alist' are consulted.
+
+Also see `let-completion-tag-refine-alist',
+`let-completion-tag-kind-alist', and
+`let-completion-tag-context-format'."
+  :type '(repeat function))
 
 (defcustom let-completion-tag-alist nil
   "Alist mapping binding form symbols to replacement tag strings.
@@ -191,6 +241,9 @@ Also see `let-completion-tag-refine-alist'."
   :type '(alist :key-type symbol :value-type string)
   :group 'let-completion)
 
+
+;;;; Customization - Faces
+
 (defcustom let-completion-tag-face 'let-completion-tag
   "Default face for tag annotations.
 Applied to the formatted tag string produced by
@@ -229,6 +282,36 @@ to the candidate.  When nil, no face is applied.
 
 Also see `let-completion-tag-face'."
   :type '(choice face (const :tag "Disable" nil)))
+
+(defcustom let-completion-separator-face 'let-completion-separator
+  "Face for the kind separator in composed tags.
+Applied to the `let-completion-tag-kind-separator' string.
+When nil, the separator inherits the tag face.
+
+Also see `let-completion-tag-kind-separator'."
+  :type '(choice face (const :tag "Inherit tag face" nil))
+  :group 'let-completion)
+
+(defcustom let-completion-kind-face 'let-completion-kind
+  "Face for the kind suffix in composed tags.
+Applied to the kind string from `let-completion-tag-kind-alist'.
+When nil, the kind inherits the tag face.
+
+Also see `let-completion-tag-face' and
+`let-completion-separator-face'."
+  :type '(choice face (const :tag "Inherit tag face" nil))
+  :group 'let-completion)
+
+(defcustom let-completion-context-face nil
+  "Face for the context string in composed tags.
+Applied to the formatted context from
+`let-completion-tag-context-format'.  When nil, the context
+inherits the tag face.
+
+Also see `let-completion-tag-context-format'."
+  :type '(choice face (const :tag "Inherit tag face" nil))
+  :group 'let-completion)
+
 ;;;; Binding Form Registry
 
 (defvar-local let-completion-binding-forms nil
@@ -474,7 +557,7 @@ Called by `let-completion--extract-shape-arglist' and
                                  var-start var-end)))
                      (unless (let-completion--arglist-non-binding-p
                               vname)
-                       (push (cons vname (cons current-tag nil))
+                       (push (list vname current-tag nil)
                              result)))))))
            result))
       (while (progn (forward-comment (buffer-size))
@@ -500,7 +583,7 @@ Called by `let-completion--extract-shape-arglist' and
                     (let ((name (buffer-substring-no-properties
                                  inner-start inner-end)))
                       (unless (let-completion--arglist-non-binding-p name)
-                        (push (cons name (cons current-tag nil))
+                        (push (list name current-tag nil)
                               result))))))
                 (goto-char inner-end))
             (error (goto-char end)))))))
@@ -537,7 +620,7 @@ Compound entries are processed by the local helper `extract-compound',
 which extracts the name via `scan-sexps' and the value via
 `read-from-string' with silent fallback to nil.
 
-Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL).
+Return alist of (NAME-STRING TAG-STRING VALUE-OR-NIL) lists.
 
 Used for `let', `let*', `when-let*', `if-let*', `and-let*', `dlet'.
 Called by `let-completion--extract-shape'."
@@ -546,7 +629,7 @@ Called by `let-completion--extract-shape'."
     (let (result)
       (cl-flet
           ;; Extract name and value from a compound binding (VAR EXPR)
-          ;; between B-START and B-END.  Return (NAME TAG . VALUE) or nil.
+          ;; between B-START and B-END.  Return (NAME TAG VALUE) or nil.
           ((extract-compound (b-start b-end)
              (save-excursion
                (goto-char (1+ b-start))
@@ -568,7 +651,7 @@ Called by `let-completion--extract-shape'."
                                                   (buffer-substring-no-properties
                                                    vs ve)))))))
                                   (error nil))))
-                     (cons name (cons tag value))))))))
+                     (list name tag value)))))))
 
         (while (progn (forward-comment (buffer-size))
                       (< (point) (1- end)))
@@ -584,9 +667,9 @@ Called by `let-completion--extract-shape'."
                         (push binding result)))
                      ;; Entry: bare symbol.
                      (t
-                      (push (cons (buffer-substring-no-properties
+                      (push (list (buffer-substring-no-properties
                                    b-start b-end)
-                                  (cons tag nil))
+                                  tag nil)
                             result)))
                     (goto-char b-end)))
               (error (goto-char end))))))
@@ -618,7 +701,7 @@ When SKIP-CONTEXT is non-nil, entries after `&context' are skipped
 until the next standard lambda-list keyword.  This handles
 `cl-defmethod' context specifications.
 
-Return alist of (NAME-STRING TAG-STRING . nil).
+Return alist of (NAME-STRING TAG-STRING nil) lists.
 
 Used for `defun', `defmacro', `defsubst', `cl-defun', `lambda',
 `cl-destructuring-bind', and indirectly by
@@ -667,7 +750,7 @@ Called by `let-completion--extract-shape'."
                                         (point) var-end)))
                             (unless (let-completion--arglist-non-binding-p
                                      vname)
-                              (push (cons vname (cons current-tag nil))
+                              (push (list vname current-tag nil)
                                     result)))))))
                    ;; Walk: compound spec -- enter and collect symbols.
                    ((eq (char-after sym-start) ?\()
@@ -679,7 +762,7 @@ Called by `let-completion--extract-shape'."
                    (t
                     (let ((name (buffer-substring-no-properties
                                  sym-start sym-end)))
-                      (push (cons name (cons current-tag nil)) result))))
+                      (push (list name current-tag nil) result))))
                   (goto-char sym-end)))
             (error (goto-char end)))))
       result)))
@@ -692,8 +775,8 @@ Skip if span contains COMPLETION-POS.
 Name is extracted via `scan-sexps'.  Value is attempted via `read'
 with silent fallback to nil.
 
-Return one-element alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL)
-or nil.
+Return one-element alist of (NAME-STRING TAG-STRING VALUE-OR-NIL)
+lists or nil.
 
 Used for `dolist', `dotimes'.
 Called by `let-completion--extract-shape'."
@@ -720,14 +803,15 @@ Called by `let-completion--extract-shape'."
                                            vs ve)))))))
                           ;; if read or scan-sexps failed, return nil
                           (error nil))))
-            (list (cons name (cons tag value)))))))))
+            (list (list name tag value))))))))
 
 (defun let-completion--extract-shape-error-var (start end completion-pos tag)
   "Extract one name from a bare symbol between START and END.
 TAG is the base tag string from the registry descriptor.
 Skip if span contains COMPLETION-POS.
 
-Return one-element alist of (NAME-STRING TAG-STRING . nil) or nil.
+Return one-element alist of (NAME-STRING TAG-STRING nil) lists
+or nil.
 
 Used for `condition-case'.
 Called by `let-completion--extract-shape'."
@@ -735,7 +819,7 @@ Called by `let-completion--extract-shape'."
       nil
     (let ((name (buffer-substring-no-properties start end)))
       (unless (or (string-empty-p name) (string= name "nil"))
-        (list (cons name (cons tag nil)))))))
+        (list (list name tag nil))))))
 
 ;;; Custom Extractor Functions
 
@@ -749,7 +833,7 @@ Walk the binding list at index 1.  Each entry has the structure
 Values are nil.  Scope check requires COMPLETION-POS past the
 binding list end.  Skip entries whose span contains COMPLETION-POS.
 
-Return alist of (NAME-STRING TAG-STRING . nil) or nil.
+Return alist of (NAME-STRING TAG-STRING nil) lists or nil.
 
 Used for `cl-flet', `cl-labels', `cl-macrolet'.
 Called by `let-completion--extract-bindings-at' via `:extractor'."
@@ -785,9 +869,9 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                         ;; -- Entry: extract name (first element).
                         (when-let* ((name-end (ignore-errors
                                                 (scan-sexps (point) 1))))
-                          (push (cons (buffer-substring-no-properties
+                          (push (list (buffer-substring-no-properties
                                        (point) name-end)
-                                      (cons tag nil))
+                                      tag nil)
                                 result))))
                     (goto-char entry-end))
                 (error (goto-char list-end)))))
@@ -807,7 +891,7 @@ navigates into each binding and filters non-symbol places,
 `read-value' parses the value via `read-from-string' with silent
 fallback to nil.
 
-Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
+Return alist of (NAME-STRING TAG-STRING VALUE-OR-NIL) lists or nil.
 
 Used for `cl-letf', `cl-letf*'.
 Called by `let-completion--extract-bindings-at' via `:extractor'."
@@ -844,7 +928,7 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                    (error nil)))
 
                ;; Extract one binding from entry between ENTRY-START
-               ;; and ENTRY-END.  Return (NAME TAG . VALUE) or nil.
+               ;; and ENTRY-END.  Return (NAME TAG VALUE) or nil.
                (extract-entry (entry-start entry-end)
                  (save-excursion
                    (goto-char (1+ entry-start))
@@ -856,10 +940,10 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                      ;;    places like (symbol-function 'foo).
                      (when (and place-end
                                 (not (eq (char-after place-start) ?\()))
-                       (cons (buffer-substring-no-properties
+                       (list (buffer-substring-no-properties
                               place-start place-end)
-                             (cons tag (read-value place-end
-                                                   entry-end))))))))
+                             tag
+                             (read-value place-end entry-end)))))))
             (while (progn (forward-comment (buffer-size))
                           (< (point) (1- list-end)))
               (let ((entry-start (point)))
@@ -881,13 +965,15 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
 COMPLETION-POS is point.  TAG is the annotation label from the
 registry descriptor.
 
-Navigate past the head symbol and method name.  Skip qualifier
-keywords (`:before', `:after', `:around') and `:extra STRING'
-pairs to find the arglist.  Delegate the arglist walk to
+Navigate past the head symbol and method name.  Capture the
+method name as context string.  Skip qualifier keywords
+\(`:before', `:after', `:around') and `:extra STRING' pairs to
+find the arglist.  Delegate the arglist walk to
 `let-completion--extract-shape-arglist' with SPECIALIZER-TAG and
 SKIP-CONTEXT enabled.
 
-Return alist of (NAME-STRING TAG-STRING . nil) or nil.
+Return alist of (NAME-STRING TAG-STRING nil CONTEXT-OR-NIL) lists
+or nil.
 
 Used for `cl-defmethod'.
 Called by `let-completion--extract-bindings-at' via `:extractor'."
@@ -899,8 +985,12 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
       (unless head-end (cl-return-from let-completion--extract-defmethod))
       (goto-char head-end)
       (forward-comment (buffer-size))
-      ;; -- Navigate: skip method name.
-      (let ((name-end (ignore-errors (scan-sexps (point) 1))))
+      ;; -- Navigate: read method name as context.
+      (let* ((name-start (point))
+             (name-end (ignore-errors (scan-sexps (point) 1)))
+             (context (when name-end
+                        (buffer-substring-no-properties
+                         name-start name-end))))
         (unless name-end (cl-return-from let-completion--extract-defmethod))
         (goto-char name-end)
         (forward-comment (buffer-size))
@@ -928,8 +1018,17 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                        (> completion-pos arglist-end))
             (cl-return-from let-completion--extract-defmethod))
           ;; -- Walk: delegate to arglist extractor with defmethod rules.
-          (let-completion--extract-shape-arglist
-           arglist-start arglist-end completion-pos tag tag t))))))
+          (let ((bindings (let-completion--extract-shape-arglist
+                           arglist-start arglist-end completion-pos
+                           tag tag t)))
+            ;; -- Attach: inject context into each entry.
+            ;; Arglist extractor returns (NAME TAG nil).
+            ;; Convert to (NAME TAG nil CONTEXT).
+            (if context
+                (mapcar (lambda (entry)
+                          (append entry (list context)))
+                        bindings)
+              bindings)))))))
 
 ;;;; Dispatcher
 
@@ -990,7 +1089,13 @@ Navigate to the sexp at `:bindings-index', check `:scope' against
 COMPLETION-POS, dispatch on `:binding-shape' with `:tag' as
 the base tag string.
 
-Return alist of (NAME-STRING TAG-STRING . VALUE-OR-NIL) or nil.
+For arglist shapes, capture a context string identifying the
+enclosing function.  For bindings-index > 1, context is the
+function name at index 1.  For `lambda' at index 1, context
+is \"λ\".
+
+Return alist of (NAME-STRING TAG-STRING VALUE-OR-NIL CONTEXT-OR-NIL)
+lists or nil.
 
 Called by `let-completion--extract-bindings-at'."
   (save-excursion
@@ -998,7 +1103,27 @@ Called by `let-completion--extract-bindings-at'."
     (let ((idx (plist-get spec :bindings-index))
           (shape (plist-get spec :binding-shape))
           (scope (plist-get spec :scope))
-          (tag (plist-get spec :tag)))
+          (tag (plist-get spec :tag))
+          (context nil))
+      ;; -- Context: capture function name for arglist shapes.
+      (when (eq shape 'arglist)
+        (if (> idx 1)
+            ;; Function name is the first sexp after head symbol.
+            (save-excursion
+              (forward-comment (buffer-size))
+              (let ((s (point))
+                    (e (ignore-errors (scan-sexps (point) 1))))
+                (when e
+                  (setq context (buffer-substring-no-properties s e)))))
+          ;; Index 1: check if head is lambda.
+          (save-excursion
+            (goto-char (1+ pos))
+            (forward-comment (buffer-size))
+            (let ((s (point))
+                  (e (ignore-errors (scan-sexps (point) 1))))
+              (when (and e (string= (buffer-substring-no-properties s e)
+                                    "lambda"))
+                (setq context "λ"))))))
       ;; Navigate forward to the binding sexp.
       ;; idx 1 means the next sexp after head, idx 2 means skip one more.
       (condition-case nil
@@ -1012,8 +1137,17 @@ Called by `let-completion--extract-bindings-at'."
         (when (and bindings-end
                    (let-completion--scope-visible-p
                     pos bindings-end completion-pos scope))
-          (let-completion--extract-shape
-           shape bindings-start bindings-end completion-pos tag))))))
+          (let ((bindings (let-completion--extract-shape
+                           shape bindings-start bindings-end
+                           completion-pos tag)))
+            ;; -- Attach: inject context into each entry when present.
+            ;; Shape extractors return (NAME TAG VALUE).
+            ;; Convert to (NAME TAG VALUE CONTEXT).
+            (if context
+                (mapcar (lambda (entry)
+                          (append entry (list context)))
+                        bindings)
+              bindings)))))))
 
 ;;;; Top-Level Binding Walker
 
@@ -1102,6 +1236,12 @@ Tag and value strings are propertized with faces from
 `let-completion-tag-face', `let-completion-tag-face-alist', and
 `let-completion-value-face' before display.
 
+Annotation layout uses two right-aligned fixed-width columns
+computed per completion session: a value column padded to the
+widest short value, and a tag column padded to the widest
+formatted tag.  Column widths are computed once when the first
+annotation is requested.
+
 Uses `let-completion--binding-values' to extract bindings.
 Uses `let-completion--make-table' to wrap the completion table.
 Uses `let-completion--doc-buffer' for the doc display buffer."
@@ -1113,68 +1253,179 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
         (when vals
           (let* ((plist (nthcdr 3 result))
                  (orig-ann (plist-get plist :annotation-function))
-                 (orig-doc (plist-get plist :company-doc-buffer)))
+                 (orig-doc (plist-get plist :company-doc-buffer))
+                 ;; Column widths, computed lazily on first annotation call.
+                 (col-widths nil))
             (cl-labels
-                ;; Tag pipeline:
-                ;; Stage 2: refine alist on (head-sym . value-head).
-                ;; Stage 3: kind suffix append (skipped if stage 2 matched).
-                ;; Stage 4: function refinement.
-                ((refine-tag (head-sym tag val c)
+                ;; Propertize SEP with separator face when set.
+                ;; Return the string unchanged when face is nil.
+                ((face-sep (sep)
+                   (if let-completion-separator-face
+                       (propertize sep 'face let-completion-separator-face)
+                     sep))
+
+                 ;; Propertize KIND with kind face when set.
+                 ;; Return the string unchanged when face is nil.
+                 (face-kind (kind)
+                   (if let-completion-kind-face
+                       (propertize kind 'face let-completion-kind-face)
+                     kind))
+
+                 ;; Compose tag with kind suffix from the kind alist.
+                 ;; Concatenate provenance TAG, separator, and KIND
+                 ;; with independent face properties on each region.
+                 ;; Return TAG unchanged when no kind suffix matches.
+                 (compose-kind (tag value-head)
+                   (let ((kind (cdr (assq value-head
+                                          let-completion-tag-kind-alist))))
+                     (if kind
+                         (let ((sep (or let-completion-tag-kind-separator "")))
+                           (concat tag (face-sep sep) (face-kind kind)))
+                       tag)))
+
+                 ;; Append formatted context string to TAG.
+                 ;; Return TAG unchanged when context format is nil
+                 ;; or CTX is nil.
+                 (compose-context (tag ctx)
+                   (if (and let-completion-tag-context-format ctx)
+                       (let ((ctx-str (format let-completion-tag-context-format ctx)))
+                         (concat tag
+                                 (if let-completion-context-face
+                                     (propertize ctx-str 'face let-completion-context-face)
+                                   ctx-str)))
+                     tag))
+
+                 ;; Run refine functions over TAG in sequence.
+                 ;; Each function receives (NAME TAG VALUE CONTEXT).
+                 ;; Fall back to three-argument call when the function
+                 ;; does not accept four arguments.  Return the final
+                 ;; tag after all functions have run.
+                 (run-refine-fns (c tag val ctx)
+                   (dolist (fn let-completion-tag-refine-functions tag)
+                     (let ((result (condition-case nil
+                                       (funcall fn c tag val ctx)
+                                     (wrong-number-of-arguments
+                                      (funcall fn c tag val)))))
+                       (when result (setq tag result)))))
+
+                 ;; Tag pipeline:
+                 ;; Stage 2: refine alist on (head-sym . value-head).
+                 ;; Stage 3: kind suffix append (skipped if stage 2 matched).
+                 ;; Stage 3.5: context append when format is set.
+                 ;; Stage 4: function list refinement.
+                 (refine-tag (head-sym tag val c ctx)
                    (let* ((value-head (car-safe val))
                           (refine-key (cons head-sym value-head))
                           (refined (cdr (assoc refine-key
                                                let-completion-tag-refine-alist)))
-                          (tag (if refined
-                                   refined
-                                 (let ((kind (cdr (assq value-head
-                                                        let-completion-tag-kind-alist))))
-                                   (if kind (concat tag kind) tag)))))
-                     (if let-completion-tag-refine-function
-                         (or (funcall let-completion-tag-refine-function
-                                      c tag val)
-                             tag)
-                       tag)))
+                          ;; Stage 2 match replaces tag and skips stage 3.
+                          (tag (if refined refined (compose-kind tag value-head)))
+                          ;; Stage 4: function refinement sees bare tag + kind.
+                          (tag (run-refine-fns c tag val ctx))
+                          ;; Stage 5: context appended last.
+                          (tag (compose-context tag ctx)))
+                     tag))
 
                  ;; Resolve face for a refined tag string.
                  (face-for-tag (tag)
                    (or (cdr (assoc tag let-completion-tag-face-alist))
                        let-completion-tag-face))
 
-                 ;; Format tag into bracket annotation with face,
-                 ;; or nil if disabled.
-                 (format-tag (tag)
+                 ;; Format tag string without padding.  Return propertized
+                 ;; string or nil if tags are disabled.
+                 ;; Apply tag face only to characters without an existing
+                 ;; face property, preserving separator and kind faces
+                 ;; set by `refine-tag'.
+                 (make-tag (tag)
                    (and let-completion-annotation-format-tag tag
-                        (let ((s (format let-completion-annotation-format-tag
-                                         tag))
+                        (let ((s (format let-completion-annotation-format-tag tag))
                               (face (face-for-tag tag)))
-                          (if face (propertize s 'face face) s))))
+                          (when face
+                            (let ((i 0)
+                                  (len (length s)))
+                              (while (< i len)
+                                (let ((next (next-single-property-change
+                                             i 'face s len)))
+                                  (unless (get-text-property i 'face s)
+                                    (put-text-property i next 'face face s))
+                                  (setq i next)))))
+                          s)))
 
-                 ;; Short printed value or nil when too wide or absent.
-                 ;; Apply value face when present.
-                 (short-value (val)
+                 ;; Short printed value string or nil when too wide or absent.
+                 ;; No face applied yet; face applied during column assembly.
+                 (short-value-str (val)
                    (and let-completion-inline-max-width val
                         (let ((s (prin1-to-string val)))
                           (and (<= (length s)
                                    let-completion-inline-max-width)
-                               (if let-completion-value-face
-                                   (propertize s 'face
-                                               let-completion-value-face)
-                                 s)))))
+                               s))))
 
-                 ;; Combine tag and short value into one annotation
-                 ;; string.  Priority: tag+short > tag > short >
-                 ;; fallback.
-                 (format-ann (tag-str short)
-                   (cond
-                    ((and tag-str short)
-                     (concat tag-str
-                             (format let-completion-annotation-format short)))
-                    (tag-str tag-str)
-                    (short
-                     (format let-completion-annotation-format short))
-                    (t
-                     (format let-completion-annotation-format
-                             let-completion-annotation-fallback))))
+                 ;; Compute column widths across all local candidates.
+                 ;; Returns (MAX-TAG-WIDTH . MAX-VAL-WIDTH).
+                 (compute-col-widths ()
+                   (let ((max-tag 0)
+                         (max-val 0))
+                     (dolist (cell vals)
+                       (let* ((c (nth 0 cell))
+                              (head-sym (nth 1 cell))
+                              (tag (nth 2 cell))
+                              (val (nth 3 cell))
+                              (ctx (nth 4 cell))
+                              (tag (refine-tag head-sym tag val c ctx))
+                              (tag-str (make-tag tag))
+                              (val-str (short-value-str val)))
+                         (when tag-str
+                           (setq max-tag (max max-tag (length tag-str))))
+                         (when val-str
+                           (setq max-val (max max-val (length val-str))))))
+                     (cons max-tag max-val)))
+
+                 ;; Ensure column widths are computed.
+                 (ensure-col-widths ()
+                   (or col-widths
+                       (setq col-widths (compute-col-widths))))
+
+                 ;; Pad VAL-STR to VAL-W characters, right-aligned.
+                 ;; Apply value face when set.
+                 (pad-value (val-str val-w)
+                   (concat (make-string (max 0 (- val-w (length val-str)))
+                                        ?\s)
+                           (if let-completion-value-face
+                               (propertize val-str 'face
+                                           let-completion-value-face)
+                             val-str)))
+
+                 ;; Assemble the two-column annotation string.
+                 ;; Value column is right-aligned, then tag column
+                 ;; is right-aligned.  Both use fixed widths.
+                 (format-ann (tag-str val-str)
+                   (let* ((widths (ensure-col-widths))
+                          (tag-w (car widths))
+                          (val-w (cdr widths)))
+                     (cond
+                      ;; Both columns present.
+                      ((and tag-str val-str)
+                       (concat " "
+                               (pad-value val-str val-w)
+                               (make-string
+                                (max 1 (- tag-w (length tag-str)))
+                                ?\s)
+                               tag-str))
+                      ;; Tag only.
+                      (tag-str
+                       (concat " "
+                               (make-string val-w ?\s)
+                               (make-string
+                                (max 1 (- tag-w (length tag-str)))
+                                ?\s)
+                               tag-str))
+                      ;; Value only.
+                      (val-str
+                       (concat " " (pad-value val-str val-w)))
+                      ;; Neither present: fallback.
+                      (t
+                       (format let-completion-annotation-format
+                               let-completion-annotation-fallback)))))
 
                  ;; Render full value into reusable doc buffer.
                  ;; Wide values use pp-to-string for readability.
@@ -1207,25 +1458,30 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                              (if (member c local-names)
                                  (push c local)
                                (push c other))))
-                         (nconc (nreverse local) (nreverse other)))))
+                         (nconc (nreverse local)
+                                (sort (nreverse other)
+                                      (lambda (a b)
+                                        (< (length a) (length b))))))))
 
                     (ann-fn
                      (lambda (c)
                        (if-let* ((cell (assoc c vals)))
-                           ;; cell: (NAME HEAD-SYM TAG . VALUE)
-                           (let* ((head-sym (cadr cell))
-                                  (tag (caddr cell))
-                                  (val (cdddr cell))
-                                  (tag (refine-tag head-sym tag val c))
-                                  (short (short-value val)))
-                             (format-ann (format-tag tag) short))
+                           ;; cell: (NAME HEAD-SYM TAG VALUE CONTEXT)
+                           (let* ((head-sym (nth 1 cell))
+                                  (tag (nth 2 cell))
+                                  (val (nth 3 cell))
+                                  (ctx (nth 4 cell))
+                                  (tag (refine-tag head-sym tag val c ctx))
+                                  (tag-str (make-tag tag))
+                                  (val-str (short-value-str val)))
+                             (format-ann tag-str val-str))
                          (when orig-ann (funcall orig-ann c)))))
 
                     (doc-fn
                      (lambda (c)
                        (if-let* ((cell (assoc c vals)))
-                           ;; cell: (NAME HEAD-SYM TAG . VALUE)
-                           (render-doc (cdddr cell))
+                           ;; cell: (NAME HEAD-SYM TAG VALUE CONTEXT)
+                           (render-doc (nth 3 cell))
                          (when orig-doc (funcall orig-doc c))))))
 
                 ;; nconc is safe: both halves are freshly allocated.
