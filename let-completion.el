@@ -142,7 +142,7 @@ Also see `let-completion-tag-kind-separator' and
   :type '(choice string (const :tag "Disable" nil))
   :group 'let-completion)
 
-(defcustom let-completion-inline-max-width 5
+(defcustom let-completion-inline-max-width 10
   "Max printed width for inline value annotation, or nil to disable.
 Only binding values whose `prin1-to-string' form fits within this
 many characters appear inline next to the candidate.  Longer values
@@ -151,6 +151,26 @@ full value regardless of this setting.
 
 Also see `let-completion-mode'."
   :type '(choice natnum (const :tag "Disable" nil)))
+
+(defcustom let-completion-context-max-width 10
+  "Max width for context string in tag annotations, or nil to disable.
+When the formatted context string (after applying
+`let-completion-tag-context-format') exceeds this width, the
+string is truncated from the left, preserving the rightmost
+characters and prepending an ellipsis.
+
+Elisp function names follow the convention PACKAGE-VERB-NOUN,
+so left truncation preserves the most meaningful portion.
+
+Example: \"← really-long-prefix-erases-buffer\" truncated to 20
+becomes \"← …prefix-erases-buffer\".
+
+The width limit applies to the raw context string before
+formatting.  Set to nil to disable truncation.
+
+Also see `let-completion-tag-context-format'."
+  :type '(choice natnum (const :tag "Disable" nil))
+  :group 'let-completion)
 
 (defcustom let-completion-tag-refine-alist nil
   "Alist mapping (HEAD-SYMBOL . VALUE-HEAD) to replacement tag strings.
@@ -240,6 +260,7 @@ Example:
 Also see `let-completion-tag-refine-alist'."
   :type '(alist :key-type symbol :value-type string)
   :group 'let-completion)
+
 
 
 ;;;; Customization - Faces
@@ -1288,11 +1309,19 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                  ;; or CTX is nil.
                  (compose-context (tag ctx)
                    (if (and let-completion-tag-context-format ctx)
-                       (let ((ctx-str (format let-completion-tag-context-format ctx)))
-                         (concat tag
-                                 (if let-completion-context-face
-                                     (propertize ctx-str 'face let-completion-context-face)
-                                   ctx-str)))
+                       (let ((ctx (if (and let-completion-context-max-width
+                                           (> (length ctx)
+                                              let-completion-context-max-width))
+                                      (concat "…"
+                                              (substring ctx
+                                                         (- (length ctx)
+                                                            (1- let-completion-context-max-width))))
+                                    ctx)))
+                         (let ((ctx-str (format let-completion-tag-context-format ctx)))
+                           (concat tag
+                                   (if let-completion-context-face
+                                       (propertize ctx-str 'face let-completion-context-face)
+                                     ctx-str))))
                      tag))
 
                  ;; Run refine functions over TAG in sequence.
@@ -1360,25 +1389,34 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                                    let-completion-inline-max-width)
                                s))))
 
-                 ;; Compute column widths across all local candidates.
-                 ;; Returns (MAX-TAG-WIDTH . MAX-VAL-WIDTH).
+                 ;; Compute column widths and context display decision.
+                 ;; Returns (MAX-TAG-WIDTH MAX-VAL-WIDTH SHOW-CONTEXT-P).
                  (compute-col-widths ()
                    (let ((max-tag 0)
-                         (max-val 0))
+                         (max-val 0)
+                         (contexts nil))
+                     ;; First: collect distinct contexts to decide display.
                      (dolist (cell vals)
-                       (let* ((c (nth 0 cell))
-                              (head-sym (nth 1 cell))
-                              (tag (nth 2 cell))
-                              (val (nth 3 cell))
-                              (ctx (nth 4 cell))
-                              (tag (refine-tag head-sym tag val c ctx))
-                              (tag-str (make-tag tag))
-                              (val-str (short-value-str val)))
-                         (when tag-str
-                           (setq max-tag (max max-tag (length tag-str))))
-                         (when val-str
-                           (setq max-val (max max-val (length val-str))))))
-                     (cons max-tag max-val)))
+                       (let ((ctx (nth 4 cell)))
+                         (when (and ctx (not (member ctx contexts)))
+                           (push ctx contexts))))
+                     ;; Show context only when multiple distinct contexts exist.
+                     (let ((show-ctx (and let-completion-tag-context-format
+                                          (cdr contexts))))
+                       (dolist (cell vals)
+                         (let* ((c (nth 0 cell))
+                                (head-sym (nth 1 cell))
+                                (tag (nth 2 cell))
+                                (val (nth 3 cell))
+                                (ctx (and show-ctx (nth 4 cell)))
+                                (tag (refine-tag head-sym tag val c ctx))
+                                (tag-str (make-tag tag))
+                                (val-str (short-value-str val)))
+                           (when tag-str
+                             (setq max-tag (max max-tag (length tag-str))))
+                           (when val-str
+                             (setq max-val (max max-val (length val-str))))))
+                       (list max-tag max-val show-ctx))))
 
                  ;; Ensure column widths are computed.
                  (ensure-col-widths ()
@@ -1400,8 +1438,8 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                  ;; is right-aligned.  Both use fixed widths.
                  (format-ann (tag-str val-str)
                    (let* ((widths (ensure-col-widths))
-                          (tag-w (car widths))
-                          (val-w (cdr widths)))
+                          (tag-w (nth 0 widths))
+                          (val-w (nth 1 widths)))
                      (cond
                       ;; Both columns present.
                       ((and tag-str val-str)
@@ -1470,7 +1508,8 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                            (let* ((head-sym (nth 1 cell))
                                   (tag (nth 2 cell))
                                   (val (nth 3 cell))
-                                  (ctx (nth 4 cell))
+                                  (show-ctx (nth 2 (ensure-col-widths)))
+                                  (ctx (and show-ctx (nth 4 cell)))
                                   (tag (refine-tag head-sym tag val c ctx))
                                   (tag-str (make-tag tag))
                                   (val-str (short-value-str val)))
