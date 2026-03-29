@@ -1251,16 +1251,20 @@ Called by `let-completion--advice' for `:company-doc-buffer'."
 Merge LOCAL-NAMES into all completion actions so candidates found
 by the parser but missed by `elisp--local-variables' appear in
 results.  Inject `display-sort-function' into the metadata
-response via SORT-FN.  Pass `boundaries' actions through unchanged.
+response via SORT-FN.  Retrieve the original sort function from
+TABLE and pass it to SORT-FN as context.  Pass `boundaries'
+actions through unchanged.
 
 Called by `let-completion--advice'."
   (lambda (string pred action)
     (cond
      ((eq action 'metadata)
-      (let ((md (if (functionp table)
-                    (funcall table string pred 'metadata)
-                  '(metadata))))
-        `(metadata (display-sort-function . ,sort-fn)
+      (let* ((md (if (functionp table)
+                     (funcall table string pred 'metadata)
+                   '(metadata)))
+             (orig-sort (cdr (assq 'display-sort-function (cdr md)))))
+        `(metadata (display-sort-function
+                    . ,(lambda (cands) (funcall sort-fn cands orig-sort)))
           ,@(assq-delete-all
              'display-sort-function
              (cdr md)))))
@@ -1497,21 +1501,21 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                      buf)))
 
               (let ((sort-fn
-                     ;; Hash deduplicates; completion-table-merge can
-                     ;; produce duplicates when a local shadows a global.
-                     (lambda (cands)
-                       (let ((seen (make-hash-table :test #'equal))
+                     ;; Promote locals above the result of the original sort
+                     ;; function (or identity when no original exists).
+                     ;; Hash deduplicates; completion-table-merge can produce
+                     ;; duplicates when a local shadows a global.
+                     (lambda (cands orig-sort)
+                       (let ((sorted (funcall (or orig-sort #'identity) cands))
+                             (seen (make-hash-table :test #'equal))
                              local other)
-                         (dolist (c cands)
+                         (dolist (c sorted)
                            (unless (gethash c seen)
                              (puthash c t seen)
                              (if (member c local-names)
                                  (push c local)
                                (push c other))))
-                         (nconc (nreverse local)
-                                (sort (nreverse other)
-                                      (lambda (a b)
-                                        (< (length a) (length b))))))))
+                         (nconc (nreverse local) (nreverse other)))))
 
                     (ann-fn
                      (lambda (c)
