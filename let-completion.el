@@ -122,7 +122,7 @@ Also see `let-completion-annotation-format' and
 `let-completion-annotation-format-tag'."
   :type 'string)
 
-(defcustom let-completion-tag-context-format "%s"
+(defcustom let-completion-tag-context-format "←%s"
   "Format string for context in the detail column.
 Receives one string argument: the context string (e.g. the
 enclosing function name).  Applied when the detail column shows
