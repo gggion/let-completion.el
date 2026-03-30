@@ -231,10 +231,6 @@ Each function receives four arguments: NAME (string), TAG
 nil, the enclosing function name).  Return a replacement tag
 string, or nil to pass unchanged to the next function.
 
-Functions that accept only three arguments are called with three
-arguments via fallback when four-argument invocation signals
-`wrong-number-of-arguments'.
-
 Functions run in order.  Each receives the tag as modified by all
 previous functions.  The final tag is used for the right column.
 
@@ -1312,15 +1308,10 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
             (cl-labels
                 ;; Run refine functions over TAG in sequence.
                 ;; Each function receives (NAME TAG VALUE CONTEXT).
-                ;; Fall back to three-argument call when the function
-                ;; does not accept four arguments.  Return the final
-                ;; tag after all functions have run.
+                ;; Return the final tag after all functions have run.
                 ((run-refine-fns (c tag val ctx)
                    (dolist (fn let-completion-tag-refine-functions tag)
-                     (let ((result (condition-case nil
-                                       (funcall fn c tag val ctx)
-                                     (wrong-number-of-arguments
-                                      (funcall fn c tag val)))))
+                     (let ((result (funcall fn c tag val ctx)))
                        (when result (setq tag result)))))
 
                  ;; Tag pipeline (right column):
