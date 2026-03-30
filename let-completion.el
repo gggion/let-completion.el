@@ -5,7 +5,7 @@
 ;; URL: https://github.com/gggion/let-completion.el
 ;; Keywords: lisp, completion
 
-;; Package-Version: 0.1.0
+;; Package-Version: 0.2.0
 ;; Package-Requires: ((emacs "28.1"))
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
