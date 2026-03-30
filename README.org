@@ -1,30 +1,1284 @@
 #+title: Let-binding values in Elisp completion
 
-=let-completion-mode= promotes local variables from enclosing binding forms to
-the top of the completion candidate list, annotates each with its binding value
-when short enough or a =[local]= tag otherwise, and provides the full
-pretty-printed fontified expression in corfu-popupinfo or any completion UI that
-reads =:company-doc-buffer=. Value extraction walks the raw buffer text of
-literal =let=, =let*=, =when-let*=, =if-let*=, =and-let*=, =dolist=, and
-=dotimes= binding lists. Names from forms the built-in =elisp--local-variables=
-misses (untrusted buffers, macroexpansion failure) are injected into the
-completion table directly so they always appear as candidates. The package
-installs a single around-advice on =elisp-completion-at-point= when enabled and
-removes it when disabled.
+=let-completion-mode= makes Emacs Lisp in-buffer completion aware of lexically
+enclosing binding forms. Local variables are promoted to the top of the
+candidate list, annotated with their binding values when short enough or =local=
+tag otherwise, and shown in full via pretty-printed fontified expressions in
+corfu-popupinfo or any completion UI that reads =:company-doc-buffer=. Each
+candidate also gets a provenance tag like =let=, =arg=, =err=, etc indicating which
+binding form introduced it. Tags are customizable through a four-stage pipeline
+that can replace, append, or programmatically refine them based on the binding
+form, the value's type, or arbitrary inspection of the value sexp.
 
-** Screenshots
+Binding form recognition uses a registry of descriptors stored as symbol
+properties. Built-in forms (=let=, =let*=, =when-let*=, =if-let*=, =defun=, =lambda=,
+=cl-defun=, =dolist=, =condition-case=, =cl-flet=, =cl-letf=, and 40+ others) are
+registered at load time. Registering a non-existing symbol has zero impact, it's
+only a symbol property, so you do not need to have the symbol loaded to register
+it . Third-party macros opt in by calling =let-completion-register-binding-form=
+with a plist describing where bindings sit and what shape they take, or by
+providing a custom extractor function for exotic binding syntax. Names from
+forms that the built-in =elisp--local-variables= misses (untrusted buffers,
+macroexpansion failure) are injected into the completion table directly so they
+always appear as candidates, no macroexpansion or arbitrary code loaded. The
+package installs a single around-advice on =elisp-completion-at-point= when
+enabled and removes it when disabled.
+
+* Screenshots
 
 [[https://github.com/gggion/let-completion.el/blob/screenshots/showcase.gif?raw=true]]
 
-** Configuration
+* Contents :noexport:
+:PROPERTIES:
+:TOC:      :include siblings :depth 1 :ignore this
+:END:
+:CONTENTS:
+- [[#install][Install]]
+- [[#configuration][Configuration]]
+- [[#the-two-column-annotation-system][The two-column annotation system]]
+- [[#registering-new-binding-forms][Registering new binding forms]]
+- [[#practical-example-registering-a-custom-macro][Practical example: registering a custom macro]]
+- [[#how-to-identify-the-shape-of-any-macro][How to identify the shape of any macro]]
+- [[#status][STATUS]]
+:END:
+* Install
+:PROPERTIES:
+:CUSTOM_ID: install
+:END:
+
+Available on MELPA.
+
+* Configuration
+:PROPERTIES:
+:CUSTOM_ID: configuration
+:END:
+** Basic
 
 #+begin_src emacs-lisp
-;; Enable for Emacs Lisp buffers.
 (add-hook 'emacs-lisp-mode-hook #'let-completion-mode)
-
-;; Show inline values up to 5 characters (the default).
-;; Set to nil to always show [local] instead.
-;; (setq let-completion-inline-max-width 5)
 #+end_src
-#+end_example
 
+Each candidate from an enclosing binding form gets two columns of annotation:
+#+begin_src elisp
+;;                                 Candidate <─────────────────────╮
+;;                                    Detail <───────────╮         │
+;;                                       Tag <───╮       │         │
+(defun greet (name &optional loud)        ;;  ┏━━┝━━━━━━━┝━━━━━━━━━┝━━┓
+  (let ((msg (format "hello %s" name))    ;;  ┃ `name'   ←greet   arg ┃
+        (buf (get-buffer-create "*out*")) ;;  ┃ `buf'       buf   let ┃
+        (scream "AHHH")                   ;;  ┃ `scream' "AHHH"   let ┃
+        (func (lambda () (insert msg))))  ;;  ┃ `func'        λ   let ┃
+    (complete here ~)))                   ;;  ┃ `loud'   ←greet   &opt┃
+;;                 ╰──────candidates─────────>┃ `msg'             let ┃
+;;                                            ┗━━━━━━━━━━━━━━━━━━━━━━━┛
+#+end_src
+
+- *Detail column* (middle): shows what the binding holds (short value, kind
+  hint, or enclosing function name).
+- *Tag column* (right): shows where the binding came from (=let=, =arg=, =err=,
+  =iter=, etc.).
+
+Out of the box, the detail column shows inline values when they fit within
+=let-completion-inline-max-width= characters (like our =scream= variable), and the
+tag column shows the registry default for each binding form. Both columns are
+independently customizable through alists and function lists.
+
+#+begin_src emacs-lisp
+;; Show inline values up to 12 characters wide (the default).
+;; Set to nil to disable inline values entirely.
+(setq let-completion-inline-max-width 12)
+
+;; Format strings wrapping the detail and tag columns.
+(setq let-completion-annotation-format "%s")
+(setq let-completion-annotation-format-tag " %s")
+
+;; Set to nil to disable the tag column entirely.
+;; (setq let-completion-annotation-format-tag nil)
+
+;; Show enclosing function name in the detail column when multiple
+;; scopes contribute candidates.  Set to nil to disable.
+(setq let-completion-tag-context-format "←%s")
+(setq let-completion-context-max-width 20)
+
+
+;; Label shown when no detail content and no tag are available.
+(setq let-completion-annotation-fallback "local")
+#+end_src
+
+Example with these settings enabled
+[[file:images/let-comp1.png]]
+
+** Recommended
+
+
+You can add kind strings to the *detail* column based on the value's type. When a
+binding value is too wide for inline display, the detail column falls back to
+a kind string looked up from =let-completion-tag-kind-alist= via the =car-safe=
+of the value sexp.
+
+#+begin_src emacs-lisp
+(setq let-completion-tag-kind-alist
+      '((lambda              . "λ")
+        (cl-function         . "𝘧")
+        (function            . "𝘧")
+        (make-hash-table     . "#s")
+        (quote               . "'()")
+        (cons                . "cons")
+        (list                . "list")
+        (make-vector         . "vec")
+        (vector              . "vec")
+        (rx                  . "rx")
+        (rx-to-string        . "rx")
+        (regexp-opt          . "rx")
+        (format              . "str")
+        (get-buffer-create   . "buffer")
+        (make-process        . "proc")
+        (start-process       . "proc")
+        (make-pipe-process   . "proc")))
+#+end_src
+
+Shorten lambda-list keyword tags. The arglist extractor tags parameters under
+=&optional=, =&rest=, etc. with the full keyword string. A refinement function
+can shorten them.
+
+#+begin_src emacs-lisp
+(defun my-shorten-arglist-keywords (_name tag _value &optional _context)
+  "Shorten lambda-list keyword tags."
+  (pcase tag
+    ("&optional" "&opt")
+    ("&rest"     "&rst")
+    ("&key"      "&key")
+    ("&aux"      "&aux")
+    ("&body"     "&bdy")
+    (_ nil)))
+
+(setq let-completion-tag-refine-functions
+      '(my-shorten-arglist-keywords))
+#+end_src
+
+How it looks:
+[[file:images/let-comp2.png]]
+** Advanced
+
+Override base tags per binding form symbol, refine tags for specific
+binding-form + value combinations, show enclosing function context in the
+detail column, and override the detail column entirely with custom functions.
+
+#+begin_src emacs-lisp
+;; Override base tags for specific forms.
+(setq let-completion-tag-alist
+      '((dolist   . "each")
+        (dotimes  . "times")
+        (cl-flet  . "fn")
+        (cl-flet* . "fn*")))
+
+;; Replace the tag for a specific (binding-form . value-head) pair.
+(setq let-completion-tag-refine-alist
+      '(((let* . lambda) . "l*λ")
+        ((let  . lambda) . "lλ")))
+
+
+;; Override the detail column with arbitrary logic.
+;; Each function receives (NAME VALUE TAG CONTEXT).
+;; Return a string to use, or nil to fall through.
+(setq let-completion-detail-functions
+      (list (lambda (_name value _tag _context)
+              (pcase (car-safe value)
+                ('format "fmt::funct")
+                ('lambda "ƛ")))))
+#+end_src
+
+how it looks:
+[[file:images/let-comp3.png]]
+** Faces
+
+Four faces ship with the package:
+
+| Face                    | Inherits from                  | Applied to                  |
+|-------------------------+--------------------------------+-----------------------------|
+| =let-completion-tag=    | =font-lock-keyword-face=       | Tag column (right)          |
+| =let-completion-value=  | =font-lock-string-face=        | Inline values in detail     |
+| =let-completion-kind=   | =font-lock-function-name-face= | Kind strings in detail      |
+| =let-completion-detail= | =completions-annotations=      | Base face for detail column |
+
+Five defcustoms control which face is used where. Set any to =nil= to let the
+completion UI's default face apply.
+
+#+begin_src emacs-lisp
+;; Default face for all tags.
+(setq let-completion-tag-face 'let-completion-tag)
+
+;; Per-tag face overrides.  First match wins.
+(setq let-completion-tag-face-alist
+      '(("let" . bold)
+        ("err" . warning)
+        ("arg" . italic)))
+
+;; Face for inline values (detail column, priority 1).
+(setq let-completion-value-face 'let-completion-value)
+
+;; Face for kind strings (detail column, priority 2).
+(setq let-completion-kind-face 'let-completion-kind)
+
+;; Face for context strings (detail column, priority 3).
+(setq let-completion-context-face 'let-completion-detail)
+#+end_src
+
+Strings returned from =let-completion-detail-functions= that already carry face
+properties (via =propertize=) are left unchanged. Strings without face
+properties receive the face matching their source (value, kind, or context).
+
+How it looks:
+[[file:images/let-comp4.png]]
+
+* Locals-only mode
+
+Sometimes you want to see /only/ the locally bound candidates, filtering out all
+global symbols. Two mechanisms are provided:
+
+** Single invocation
+
+=let-completion-locals-only-complete= temporarily restricts completion to local
+bindings for one completion session. The local-only table is captured by the
+completion UI and persists until you dismiss the popup.
+
+#+begin_src emacs-lisp
+;; Bind to a key for quick access.
+(keymap-set emacs-lisp-mode-map "C-c C-l" #'let-completion-locals-only-complete)
+#+end_src
+
+
+** Persistent mode
+
+=let-completion-locals-only-mode= is a buffer-local minor mode that makes all
+completions show only local bindings until toggled off. Displays =LC:local= in the
+mode line.
+
+#+begin_src emacs-lisp
+M-x let-completion-locals-only-mode
+#+end_src
+
+Both mechanisms are independent from one another: the command works whether or
+not the minor mode is active, the command simply enables this mode, calls
+autocompletion, and disables the mode. Annotations, documentation popups, and
+sorting all work identically in locals-only mode. As previously mentioned, the
+mode is a simple on/off toggle for filtering the candidates.
+
+* The two-column annotation system
+:PROPERTIES:
+:CUSTOM_ID: the-two-column-annotation-system
+:END:
+#+begin_quote
+[!TIP]
+tl;dr:
+- here are 2 columns: details and tags
+- information on each column is completely customizable -> what to display, when to display, how to display
+- customization is done through alists and each column has it's own pipeline of 3 tiers (from lowest priority to highest):
+  - simple alist mapping: example =(let* . "l*")= -> all candidates from =let*= will have tag =l*=
+  - further refinement: example =((let* . lambda) . "Let*:::λ" )= -> if a =let*= is of type lambda, it's tag will be =Let*:::λ=, all other let* will apear as =l*=, this only applies to lambdas in =let*=
+  - list of refinement functions: here you do whatever you want, you can create a function that checks if the body of the lambda candidate in the let* binding has odd or even number of args and tag accordingly =L*::λ::even=.
+
+- detail column has same structure with one exception : context-capture -> direct mapping -> refinement mapping -> refinement functions
+  - context is not customizable (yet): it's a simple string that tells you which form a candidate came from (=var1 ←my-func=). it doens't show up unless it's relevant to the completion.
+#+end_quote
+
+Every local binding candidate is annotated with two independent columns: a
+detail column in the middle and a tag column on the right. *Each column has its
+own resolution pipeline, its own override mechanism, and its own face control*.
+Column widths are computed once per completion session by scanning all local
+candidates, so columns stay aligned as you type.
+
+** The detail column (middle)
+
+The detail column shows /what the binding holds/. Content is resolved through a
+four-priority cascade. The first priority that produces a non-nil result wins
+and the rest are skipped.
+
+| Priority | Source                           | Condition                                               |
+|----------+----------------------------------+---------------------------------------------------------|
+|        0 | =let-completion-detail-functions=  | First non-nil return from the function list             |
+|        1 | Inline value via =prin1-to-string= | Value non-nil and fits =let-completion-inline-max-width=  |
+|        2 | Kind string                      | =car-safe= of value matches =let-completion-tag-kind-alist= |
+|        3 | Context string                   | Multiple function scopes contribute candidates          |
+
+*** Priority 0: custom functions
+
+=let-completion-detail-functions= is a list of functions, each receiving four
+arguments: =NAME= (string), =VALUE= (the raw binding sexp or nil), =TAG= (the
+resolved tag string), and =CONTEXT= (string or nil, the enclosing function
+name). Return a string to display, or nil to pass to the next function.
+
+The first non-nil return wins. Returning an empty string suppresses the detail
+column for that candidate. Returning a propertized string preserves its face.
+Returning a plain string gets the default detail face applied.
+
+#+begin_src emacs-lisp
+;; Show a Greek letter for lambda bindings based on first parameter.
+(setq let-completion-detail-functions
+      (list (lambda (_name value _tag _context)
+              (when (eq (car-safe value) 'lambda)
+                (pcase (car-safe (cadr value))
+                  ('item   "ƛ∷α")
+                  ('window "ƛ∷ϐ")
+                  (_       "ƛ"))))))
+
+;; Show the arity for function values.
+(defun my-show-arity (_name value _tag _context)
+  "Show argument count for lambda and function values."
+  (pcase (car-safe value)
+    ('lambda
+     (let ((args (cadr value)))
+       (format "λ/%d" (cl-count-if-not
+                        (lambda (a) (memq a '(&optional &rest &key)))
+                        args))))
+    (_ nil)))
+
+(add-to-list 'let-completion-detail-functions #'my-show-arity)
+#+end_src
+
+*** Priority 1: inline values
+
+When =let-completion-inline-max-width= is non-nil, the value is printed via
+=prin1-to-string=. If the printed form fits within that many characters, it
+appears in the detail column with =let-completion-value-face=. Long values fall
+through to priority 2.
+
+#+begin_src emacs-lisp
+;; Show values up to 20 characters wide.
+(setq let-completion-inline-max-width 20)
+
+;; Disable inline values entirely (only kind/context will show).
+;; (setq let-completion-inline-max-width nil)
+#+end_src
+
+Given:
+
+#+begin_src elisp
+(let ((x 42)
+      (name "hi")
+      (table (make-hash-table :test 'equal)))
+  |(complete here))
+#+end_src
+
+With =let-completion-inline-max-width= set to 12:
+
+| Candidate | Printed value                    | Fits? | Detail shown |
+|-----------+----------------------------------+-------+--------------|
+| =x=         | ="42"=                             | yes   | =42=           |
+| =name=      | ="\"hi\""=                         | yes   | ="hi"=         |
+| =table=     | ="(make-hash-table :test 'equal)"= | no    | (priority 2) |
+
+*** Priority 2: kind strings
+
+When the value is non-nil but too wide for inline display,
+=let-completion-tag-kind-alist= is consulted. Each entry maps a value head
+symbol (the =car-safe= of the value sexp) to a short string displayed with
+=let-completion-kind-face=.
+
+#+begin_src emacs-lisp
+(setq let-completion-tag-kind-alist
+      '((lambda          . "λ")
+        (make-hash-table . "#s")
+        (quote           . "'")))
+#+end_src
+
+Continuing the example above, =table= has value =(make-hash-table :test 'equal)=.
+Its =car-safe= is =make-hash-table=, which maps to ="#s"=, so the detail column
+shows =#s=.
+
+*** Priority 3: context string
+
+When multiple enclosing functions contribute local candidates (e.g. you are
+inside a =lambda= inside a =cl-flet= inside a =defun=), the enclosing function
+name appears in the detail column. This disambiguates identically-named
+variables from different scopes.
+
+Context display is gated on three conditions:
+
+1. The candidate has a non-nil context string (captured from the enclosing
+   function name).
+2. =let-completion-tag-context-format= is non-nil.
+3. Multiple distinct context strings exist among all local candidates.
+
+If only one function scope contributes candidates, context is suppressed
+because it provides no disambiguation.
+
+#+begin_src emacs-lisp
+;; Format string wrapping the context.  Set to nil to disable.
+(setq let-completion-tag-context-format "←%s")
+
+;; Truncate long function names from the left.
+;; "my-very-long-package-name-function" becomes "…name-function".
+;; Set to nil to disable truncation.
+(setq let-completion-context-max-width 20)
+#+end_src
+
+** The tag column (right)
+
+The tag column shows /where the binding came from/. Tags pass through a
+three-stage pipeline. Each stage is optional and defaults to no effect.
+
+| Stage | Mechanism                           | Keyed on                   | Operation |
+|-------+-------------------------------------+----------------------------+-----------|
+|     1 | =let-completion-tag-alist= or =:tag=    | head symbol                | Replace   |
+|     2 | =let-completion-tag-refine-alist=     | (head-symbol . value-head) | Replace   |
+|     3 | =let-completion-tag-refine-functions= | (name tag value context)   | Replace   |
+
+*** Stage 1: base tag
+
+Every registered binding form has a default tag string in its registry
+descriptor (e.g. ="let"=, ="arg"=, ="err"=, ="iter"=). You can override the base
+tag for any form by adding entries to =let-completion-tag-alist=. This
+replacement happens during extraction, before annotation display.
+
+#+begin_src emacs-lisp
+(setq let-completion-tag-alist
+      '((dolist                         . "each")
+        (dotimes                        . "times")
+        (dolist-with-progress-reporter  . "each")
+        (dotimes-with-progress-reporter . "times")
+        (cl-do-symbols                  . "sym∀")
+        (cl-do-all-symbols              . "sym∀")
+        (named-let                      . "nlet")
+        (cl-flet                        . "fn")
+        (cl-flet*                       . "fn*")
+        (cl-labels                      . "fn**")
+        (cl-macrolet                    . "mac")
+        (cl-letf                        . "place")
+        (cl-letf*                       . "place*")
+        (with-slots                     . "slot")
+        (cl-symbol-macrolet             . "sym")
+        (cl-multiple-value-bind         . "mv")
+        (cl-with-gensyms                . "gen")
+        (cl-once-only                   . "gen")
+        (ert-with-temp-file             . "file")
+        (ert-with-temp-directory        . "dir")
+        (ert-with-message-capture       . "msg")))
+#+end_src
+
+The built-in defaults for every registered form are listed in the status table
+at the end of this document.
+
+For arglist binding forms (=defun=, =lambda=, =cl-defun=, etc.), the arglist
+extractor overrides the base tag per-parameter with the lambda-list keyword in
+effect. A parameter after =&optional= gets tag ="&optional"= instead of ="arg"=.
+This override happens at extraction time, before any refinement stage runs.
+Use stage 3 functions to shorten these (see the recommended configuration).
+
+*** Stage 2: binding form + value head refinement
+
+If you want a specific tag when a particular binding form contains a particular
+value type, add entries to =let-completion-tag-refine-alist=. Each key is a cons
+cell =(HEAD-SYMBOL . VALUE-HEAD)= where =HEAD-SYMBOL= is the binding form
+(e.g. =let*=) and =VALUE-HEAD= is the =car-safe= of the binding value
+(e.g. =lambda=). When both match, the associated string replaces the tag. First
+match wins.
+
+#+begin_src emacs-lisp
+;; Only let* bindings containing lambdas get this tag.
+;; Plain let bindings with lambdas fall through to stage 3.
+(setq let-completion-tag-refine-alist
+      '(((let* . lambda) . "l*λ")
+        ((let  . quote)  . "l'")))
+#+end_src
+
+*** Stage 3: programmatic refinement
+
+For refinements that need more context than a fixed key can express, add
+functions to =let-completion-tag-refine-functions=. Each function receives four
+arguments: =NAME= (the candidate string), =TAG= (the current tag string after
+stages 1 and 2), =VALUE= (the raw binding value sexp or nil), and =CONTEXT=
+(string or nil, the enclosing function name). Return a replacement tag string,
+or nil to leave the tag unchanged for the next function.
+
+Functions run in order. Each receives the tag as modified by all previous
+functions. This lets you compose independent refinement rules without cramming
+them into a single =cond= cascade.
+
+#+begin_quote
+[!NOTE]
+Functions in =let-completion-tag-refine-functions= will execute in the order you set them in the list.
+#+end_quote
+
+#+begin_src emacs-lisp
+;; Shorten lambda-list keywords.
+(defun my-shorten-arglist-keywords (_name tag _value &optional _context)
+  "Shorten lambda-list keyword tags."
+  (pcase tag
+    ("&optional" "&opt")
+    ("&rest"     "&rst")
+    ("&key"      "&key")
+    ("&aux"      "&aux")
+    ("&body"     "&bdy")
+    (_ nil)))
+
+;; Show element count for quoted lists.
+;; (keys '(a b c d)) shows tag "let<4>" instead of plain "let".
+(defun my-count-quoted-list (_name tag value &optional _context)
+  "Append element count for quoted list values."
+  (when (and (consp value)
+             (eq (car value) 'quote)
+             (proper-list-p (cadr value)))
+    (format "%s<%d>" tag (length (cadr value)))))
+
+;; Apply a distinct face to arglist keyword tags.
+(defface my-arglist-keyword-face
+  '((t :inherit font-lock-type-face :slant italic))
+  "Face for lambda-list keyword tags.")
+
+(defun my-face-arglist-keywords (_name tag _value &optional _context)
+  "Apply distinct face to lambda-list keyword tags."
+  (when (string-prefix-p "&" tag)
+    (propertize tag 'face 'my-arglist-keyword-face)))
+
+(setq let-completion-tag-refine-functions
+      '(my-shorten-arglist-keywords
+        my-count-quoted-list
+        my-face-arglist-keywords))
+#+end_src
+
+
+** Tag pipeline walkthrough
+
+To see how the stages interact, consider this code:
+
+#+begin_src elisp
+(let ((fn1 (lambda () t))
+      (keys '(a b c d))
+      (modes '(emacs-lisp-mode lisp-mode)))
+  (let* ((fn2 (lambda () t))
+         (syms '(x y z)))
+    (complete here ~)))
+#+end_src
+
+With these settings:
+
+#+begin_src emacs-lisp
+(setq let-completion-tag-alist '((let . "l") (let* . "l*"))) ;; stage 1
+(setq let-completion-tag-refine-alist '(((let* . lambda) . "l*λ"))) ;; stage 2
+;; my-count-quoted-list from above is in tag-refine-functions and would be stage 3
+#+end_src
+
+| Candidate | Stage 1 | Stage 2  | Stage 3  | Final |
+|-----------+---------+----------+----------+-------|
+| =fn1=       | ="l"=     | /no match/ | /no match/ | =l=     |
+| =keys=      | ="l"=     | /no match/ | ="l·4"=    | =l·4=   |
+| =modes=     | ="l"=     | /no match/ | ="l·2"=    | =l·2=   |
+| =fn2=       | ="l*"=    | ="l*λ"=    | /no match/ | =l*λ=   |
+| =syms=      | ="l*"=    | /no match/ | ="l*·3"=   | =l*·3=  |
+
+Stage 3 functions have access to the full value sexp. You can dispatch on
+structure rather than just the head symbol: count arguments in a function call,
+detect specific nesting patterns, inspect string content, or apply faces to the
+tag string itself.
+
+** Column interaction examples
+
+The detail column and tag column are fully independent. Here is how they
+combine for a realistic binding set:
+
+#+begin_src elisp
+(defun process-items (items &optional callback)
+  (let ((count (length items))
+        (table (make-hash-table :test 'equal))
+        (handler (lambda (err) (message "%s" err))))
+    (complete here ~)))
+#+end_src
+
+With =let-completion-inline-max-width= set to 12, =let-completion-tag-kind-alist=
+from the recommended config, and default tags:
+
+| Candidate | Value printed                  | Detail column | Tag column |
+|-----------+--------------------------------+---------------+------------|
+| =items=     | /nil (arglist parameter)/        | /(empty)/       | =arg=        |
+| =callback=  | /nil (arglist parameter)/        | /(empty)/       | =&optional=  |
+| =count=     | ="(length items)"= (13 chars)    | /(too wide)/    | =let=        |
+| =table=     | ="(make-hash-table ...)"= (wide) | =#s=            | =let=        |
+| =handler=   | ="(lambda (err) ...)"= (wide)    | =λ=             | =let=        |
+
+The detail column shows the most specific information available: literal value
+when short, kind hint when the value is recognized, nothing when the binding has
+no extractable value (arglist parameters). The tag column always shows
+provenance. Users read right-to-left: first the tag to know the binding form,
+then the detail to know what it holds.
+
+* Registering new binding forms
+:PROPERTIES:
+:CUSTOM_ID: registering-new-binding-forms
+:END:
+
+Third-party macros opt in by calling =let-completion-register-binding-form= with a
+symbol and a descriptor plist.
+
+#+begin_src emacs-lisp
+(let-completion-register-binding-form 'my-let
+  '(:bindings-index 1 :binding-shape list :scope body :tag "mylet"))
+#+end_src
+
+The descriptor tells the walker where the bindings are and what shape they take.
+Four keys are required:
+
+| Key             | Type    | Values                             |
+|-----------------+---------+------------------------------------|
+| =:bindings-index= | integer | 1-based position after head symbol |
+| =:binding-shape=  | symbol  | =list=, =arglist=, =single=, =error-var=   |
+| =:scope=          | symbol  | =body=, =then=, =handlers=               |
+| =:tag=            | string  | Base annotation label              |
+
+** Identifying the bindings index
+
+The =:bindings-index= counts sexps after the head symbol, starting from 1. Look
+at where the binding site appears in the macro's signature:
+
+#+begin_src elisp
+(let BINDINGS BODY...)        ; BINDINGS is sexp 1 -> :bindings-index 1
+(defun NAME ARGLIST BODY...)  ;  ARGLIST is sexp 2 -> :bindings-index 2
+(named-let NAME BINDINGS ...) ; BINDINGS is sexp 2 -> :bindings-index 2
+#+end_src
+
+** Identifying the shape
+
+The shape describes how variable names are structured inside the binding site.
+Check the macro's documentation or expand it with =pp-macroexpand-last-sexp= to
+see the binding structure.
+
+*** =list=: binding list with =(VAR EXPR)= pairs
+
+The binding site is a list of entries where each entry is either a bare symbol
+(bound to nil) or a =(SYMBOL VALUEFORM)= pair. This is the most common shape.
+
+#+begin_src elisp
+(FUNC ((SYMBOL VALUEFORM)
+       (SYMBOL VALUEFORM)
+       SYMBOL)
+  BODY)
+#+end_src
+
+#+begin_src elisp
+(let ((x 1)          ; (SYMBOL VALUEFORM) pair
+      (y 2)
+      z)             ; bare symbol, bound to nil
+  BODY)
+#+end_src
+
+Used by =let=, =let*=, =when-let*=, =if-let*=, =and-let*=, =dlet=, =letrec=,
+=named-let=, =cl-do=, =cl-do*=, =cl-symbol-macrolet=, =with-slots=.
+
+*** =arglist=: function parameter list
+
+The binding site is a lambda-style argument list. Variable names appear as bare
+symbols. Lambda-list keywords (=&optional=, =&rest=, =&key=, =&aux=, =&body=)
+can appear between parameters but are not collected as bindings. A plain list
+of symbols like =(a b c)= is a valid arglist. Compound specs like
+=(VAR DEFAULT SUPPLIED-P)= in =cl-defun= arglists are entered and their symbols
+collected too.
+
+#+begin_src elisp
+(FUNC (SYMBOL SYMBOL &optional SYMBOL &rest SYMBOL)
+  BODY)
+
+;; plain arglist without keywords
+(FUNC (SYMBOL SYMBOL SYMBOL)
+  BODY)
+
+(FUNC (SYMBOL &key (SYMBOL DEFAULT) (SYMBOL DEFAULT SUPPLIED-P))
+  BODY)
+#+end_src
+
+#+begin_src elisp
+(defun my-fn (required &optional opt &rest rest)
+  BODY)
+
+(lambda (a b c)
+  BODY)
+
+(cl-defun my-fn (a &optional (b 0 b-supplied-p) &key (c 42))
+  BODY)
+#+end_src
+
+This extractor is used by =defun=, =defmacro=, =defsubst=, =cl-defun=, =cl-defmacro=,
+=cl-defsubst=, =define-inline=, =cl-defgeneric=, =iter-defun=, =cl-iter-defun=, =lambda=,
+=cl-destructuring-bind=, =cl-multiple-value-bind=, =cl-with-gensyms=, =cl-once-only=, if
+you want to register a form with a similar structure check how they were
+registered in [[file:let-completion.el]]
+
+*** =single=: one =(VAR EXPR)= in a subform
+
+The binding site is a single parenthesized form containing one variable name
+followed by one or more expressions. The first element is the variable, the
+second is its value.
+
+#+begin_src elisp
+(FUNC (SYMBOL EXPR)
+  BODY)
+#+end_src
+
+#+begin_src elisp
+(dolist (elt some-list)    ; VAR is elt, value is some-list
+  BODY)
+
+(dotimes (i 10)            ; VAR is i, value is 10
+  BODY)
+#+end_src
+
+Used by =dolist=, =dotimes=, =cl-do-symbols=, =cl-do-all-symbols=,
+=dolist-with-progress-reporter=, =dotimes-with-progress-reporter=.
+
+*** =error-var=: bare symbol at fixed position
+
+The binding site is a bare symbol sitting directly at the binding index, not
+wrapped in any list.
+
+#+begin_src elisp
+(FUNC SYMBOL
+  BODY)
+#+end_src
+
+#+begin_src elisp
+(condition-case err         ; VAR is err, bare symbol at index 1
+    PROTECTED-FORM
+  (error HANDLER))
+
+(ert-with-temp-file name    ; VAR is name, bare symbol at index 1
+  BODY)
+#+end_src
+
+Used by =condition-case=, =condition-case-unless-debug=, =ert-with-temp-file=,
+=ert-with-temp-directory=, =ert-with-message-capture=.
+
+** Identifying the scope
+The scope determines which part of the form can see the bindings.
+
+*** =body=: everything after the binding site
+
+Bindings are visible in all sexps from the binding site to the end of the form.
+This is the most common scope and almost always the right choice.
+
+#+begin_src elisp
+(FUNC BINDINGS
+  VISIBLE
+  VISIBLE
+  VISIBLE)
+#+end_src
+
+#+begin_src elisp
+(let ((x 1))
+  (use x)       ; x is visible here
+  (use x)       ; and here
+  (use x))      ; and here
+#+end_src
+
+*** =then=: only the first sexp after the binding site
+
+Bindings are visible only in the first sexp after the binding list. The else
+branch and any further sexps cannot see them. Used by =if-let= and =if-let*=.
+
+#+begin_src elisp
+(FUNC BINDINGS
+  VISIBLE
+  NOT-VISIBLE
+  NOT-VISIBLE)
+#+end_src
+
+#+begin_src elisp
+(if-let* ((x (compute)))
+    (use x)              ; x is visible here
+  (fallback))            ; x is NOT visible here
+#+end_src
+
+*** =handlers=: after the protected expression
+
+Bindings are not visible during the second element of the form (the protected
+expression) but are visible in all handler clauses that follow it. Used by
+=condition-case= and =condition-case-unless-debug=.
+
+#+begin_src elisp
+(FUNC SYMBOL
+  NOT-VISIBLE
+  VISIBLE
+  VISIBLE)
+#+end_src
+
+#+begin_src elisp
+(condition-case err
+    (dangerous-call)       ; err is NOT bound here
+  (error (handle err))     ; err IS bound here
+  (quit (handle err)))     ; and here
+#+end_src
+
+If you are unsure which scope your form needs, =body= is almost always correct.
+
+** Putting it together
+
+To register a new form, identify its bindings index, shape, and scope from its
+documentation, then call:
+
+#+begin_src emacs-lisp
+;; Example: a hypothetical with-database macro
+;; (with-database (conn "sqlite:///db") BODY...)
+;; Binding site at index 1, one (VAR EXPR) pair, visible in body.
+(let-completion-register-binding-form 'with-database
+  '(:bindings-index 1 :binding-shape single :scope body :tag "db"))
+
+;; Example: a macro with an arglist at index 3
+;; (define-handler name :type (arg1 arg2 &optional arg3) BODY...)
+;; The arglist is the third sexp after the head.
+(let-completion-register-binding-form 'define-handler
+  '(:bindings-index 3 :binding-shape arglist :scope body :tag "hnd"))
+#+end_src
+
+** Custom extractors
+
+For forms whose binding structure does not fit any of the four standard shapes,
+provide a custom extractor function instead of a shape descriptor. The function
+receives =(POS COMPLETION-POS TAG)= where =POS= is the opening paren of the
+form, =COMPLETION-POS= is point, and =TAG= is the resolved base tag. It returns
+a list of entries, each =(NAME-STRING TAG-STRING VALUE-OR-NIL)= or
+=(NAME-STRING TAG-STRING VALUE-OR-NIL CONTEXT-STRING)=.
+
+#+begin_src emacs-lisp
+(defun my-special-extractor (pos completion-pos tag)
+  "Extract bindings from my-special-form at POS.
+COMPLETION-POS is point.  TAG is the base tag string."
+  (save-excursion
+    (goto-char (1+ pos))
+    ;; ... navigate and extract ...
+    (list (list "var-name" tag some-value))))
+
+(let-completion-register-binding-form 'my-special-form
+  '(:extractor my-special-extractor :tag "spec"))
+#+end_src
+
+The built-in forms =cl-flet=, =cl-flet*=, =cl-labels=, =cl-macrolet=, =cl-letf=, =cl-letf*=,
+and =cl-defmethod= all use custom extractors. Feel free to check and use them as
+reference for writing your own.
+
+** Buffer-local overrides (non-Elisp Lisps)
+#+begin_src
+SOON, still figuring this out.
+#+end_src
+
+* Practical example: registering a custom macro
+:PROPERTIES:
+:CUSTOM_ID: practical-example-registering-a-custom-macro
+:END:
+
+Suppose you write a macro that fetches a record and binds its fields:
+
+#+begin_src emacs-lisp
+(defmacro with-record-fields (fields expr &rest body)
+  "Bind FIELDS from the plist returned by EXPR, then evaluate BODY.
+FIELDS is a list of symbols.  Each symbol is bound to the value
+of the corresponding keyword in the plist.
+
+  (with-record-fields (name age email)
+      \\='(:name \"Ada\" :age 36 :email \"ada@math.uk\")
+    (format \"%s (%d) <%s>\" name age email))"
+  (declare (indent 2))
+  (let ((result (gensym "record-")))
+    `(let* ((,result ,expr)
+            ,@(mapcar (lambda (f)
+                        `(,f (plist-get ,result
+                                        ,(intern (format ":%s" f)))))
+                      fields))
+       ,@body)))
+#+end_src
+
+This macro expands to =let*= with one binding per field, so the built-in
+=elisp--local-variables= will find the names after macroexpansion if the file is
+trusted (see =trusted-content=). But macroexpansion can fail in untrusted buffers,
+during editing of incomplete forms, or when the macro is not yet loaded.
+
+BUT - wit this package you can now get candidates without doing any of that, no
+macroexpansion, forms can have unbalanced parens, candidates always appear
+regardless.
+
+Take this usage of the macro:
+
+#+begin_src elisp
+(with-record-fields (name age email)
+    '(:name "Gino" :age 75 :email "gggion123@gmail.com")
+  (format "%s (%d) <%s>" name age email))
+
+;; => "Gino (75) <gggion123@gmail.com>"
+#+end_src
+
+The binding site is a flat list of symbols at index 1 (the =FIELDS= list). There
+are no =(VAR EXPR)= pairs, no lambda-list keywords, no nesting. This is closest to
+the =arglist= shape: a list of bare symbols collected directly.
+
+You can also deduce the registration parameters from the macro's signature.
+Evaluate =(elisp-get-fnsym-args-string 'with-record-fields)= or check the help
+buffer:
+
+#+begin_src elisp
+(with-record-fields (FIELDS EXPR &rest BODY))
+;;                   ╰─1─╯  ╰2─╯       ╰─3──╯
+;;
+;; FIELDS is sexp 1 after the head  -> :bindings-index 1
+;; FIELDS is a flat list of symbols -> :binding-shape arglist
+;; BODY is &rest (all remaining)    -> :scope body
+#+end_src
+
+The signature tells you everything: the binding site is the first argument, it
+takes a list of symbols, and the body is all remaining forms.
+
+#+begin_src emacs-lisp
+(let-completion-register-binding-form 'with-record-fields
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "rec"))
+#+end_src
+
+You can evaluate the form to verify it works:
+
+#+begin_src elisp
+;; Shape and scope:
+;;
+;; (FUNC  (SYMBOL SYMBOL SYMBOL)  EXPR
+;;    BODY)
+;;
+(with-record-fields (name age email)
+    '(:name "Gino" :age 98 :email "gggion123@gmail.com")
+  ;;  ╰──────────┬──────────╯
+  ;;   (SYMBOL SYMBOL SYMBOL)
+  ;;      :binding-shape arglist
+  ;;      :bindings-index 1
+  ;;
+  ;;  ╭────────────┴─────────────╮
+  (format "%s (%d) <%s>" name age email))
+  ;;         :scope body
+#+end_src
+
+Evaluating this returns information about this 98 year old man. If you trigger
+completion inside the body it'll produce:
+
+| Candidate | Detail | Tag |
+|-----------+--------+-----|
+| =name=      |        | =rec= |
+| =age=       |        | =rec= |
+| =email=     |        | =rec= |
+
+The =arglist= shape works here because it collects bare symbols and skips
+lambda-list keywords. Since =(name age email)= contains no =&optional= or =&rest=
+markers, every symbol becomes a candidate. If your macro used =(VAR EXPR)= pairs
+instead, you would use the =list= shape. If it bound a single variable, you would
+use =single=.
+
+* How to identify the shape of any macro
+:PROPERTIES:
+:CUSTOM_ID: how-to-identify-the-shape-of-any-macro
+:END:
+
+When you encounter a macro/form you want to register, inspect its binding site
+and match it against these patterns. Each pattern shows what the binding site
+looks like in source code and how to recognize it.
+
+** Pattern: =list= shape
+
+Look for a list of =(VAR EXPR)= pairs, optionally mixed with bare symbols.
+
+#+begin_src elisp
+;; Pattern: list of pairs and/or bare symbols
+(FUNC ((VAR EXPR)
+       (VAR EXPR)
+       VAR)
+  BODY)
+#+end_src
+
+#+begin_quote
+[!TIP]
+Signs you have a =list= shape:
+
+- The binding site is a list wrapped in one set of parentheses.
+- Inside that list, each entry is either =(SYMBOL VALUEFORM)= or a bare =SYMBOL=.
+- The macro's docstring says "bindings", "variable list", or "VARLIST".
+- Macroexpansion shows =let= or =let*= with the same structure.
+#+end_quote
+
+Some examples from existing forms:
+
+#+begin_src elisp
+;; let: list at index 1, `body' scope
+(let ((x 1) (y 2) z)  BODY)
+;;   ╰──────┬───────╯
+;;   ((VAR EXPR) (VAR EXPR) VAR)
+
+;; when-let*: list at index 1, `body' scope
+(when-let* ((buf (get-buffer name))
+            (win (get-buffer-window buf)))
+  BODY)
+;;          ╰──────────┬──────────╯
+;;          ((VAR EXPR) (VAR EXPR))
+
+;; named-let: list at index 2, `body' scope
+(named-let loop ((i 0) (acc nil))  BODY)
+;;               ╰──────┬──────╯
+;;         ((VAR EXPR) (VAR EXPR))
+
+;; if-let*: list at index 1, `then' scope
+(if-let* ((x (compute)))  THEN  ELSE)
+;;        ╰──────┬─────╯
+;;        ((VAR EXPR))
+#+end_src
+
+When in doubt, expand the macro. If the expansion contains =let= or =let*= with
+the same binding list structure, the shape is =list=.
+
+** Pattern: =arglist= shape
+
+Look for a flat list of symbol names, possibly with lambda-list keywords.
+
+#+begin_src elisp
+;; Pattern: bare symbols with optional keywords
+(FUNC (SYM SYM &optional SYM &rest SYM)
+  BODY)
+
+;; Pattern: bare symbols without keywords
+(FUNC (SYM SYM SYM)
+  BODY)
+
+;; Pattern: CL compound specs
+(FUNC (SYM &optional (SYM DEFAULT) &key (SYM DEFAULT SUPPLIED-P))
+  BODY)
+#+end_src
+
+#+begin_quote
+[!TIP]
+Signs you have an =arglist= shape:
+
+- The binding site looks like a function's parameter list.
+- Symbols appear bare (not wrapped in =(VAR EXPR)= pairs).
+- Lambda-list keywords like =&optional=, =&rest=, =&key= may appear.
+- The macro's docstring says "arguments", "arglist", "parameters", or "ARGS".
+- The macro defines or wraps a function.
+#+end_quote
+
+Examples from existings forms:
+
+#+begin_src elisp
+;; defun: arglist at index 2, `body' scope
+(defun my-fn (a b &optional c)  BODY)
+;;            ╰──────┬───────╯
+;;      (SYM SYM &optional SYM)
+
+;; lambda: arglist at index 1, `body' scope
+(lambda (x y)  BODY)
+;;      ╰─┬─╯
+;;    (SYM SYM)
+
+;; cl-defun: arglist at index 2, `body' scope
+(cl-defun my-fn (a &key (b 0 b-p))  BODY)
+;;               ╰───────┬────────╯
+;;         (SYM &key (SYM DEFAULT SUPPLIED-P))
+
+;; cl-destructuring-bind: arglist at index 1, `body' scope
+(cl-destructuring-bind (a b &rest c) EXPR  BODY)
+;;                     ╰─────┬─────╯
+;;              (SYM SYM &rest SYM)
+#+end_src
+
+The key distinction from =list= shape: in an =arglist=, symbols stand alone. In
+a =list=, symbols are wrapped in =(VAR EXPR)= pairs. If the binding site
+contains =(symbol expression)= sub-lists where the expression is a value being
+bound, that is =list= shape. If it contains bare symbols that receive their
+values from somewhere else (function call, destructuring, iteration), that is
+=arglist= shape.
+
+** Pattern: =single= shape
+
+Look for one parenthesized form with one variable and one or more expressions.
+
+#+begin_src elisp
+;; Pattern: one (VAR EXPR) at the binding index
+(FUNC (VAR EXPR)
+  BODY)
+
+;; Pattern: one (VAR EXPR RESULT) at the binding index
+(FUNC (VAR EXPR RESULT)
+  BODY)
+#+end_src
+
+#+begin_quote
+[!TIP]
+Signs you have a =single= shape:
+
+- The binding site contains exactly one variable name.
+- The variable and its source expression are in one parenthesized form.
+- The macro's docstring says "VAR", "SPEC", or shows =(VAR LIST)=.
+- The macro iterates over something, binding the variable to each element.
+#+end_quote
+
+Examples from existing forms:
+
+#+begin_src elisp
+;; dolist: single at index 1, body scope
+(dolist (elt some-list)  BODY)
+;;      ╰──────┬──────╯
+;;      (VAR EXPR)
+
+;; dotimes: single at index 1, body scope
+(dotimes (i 10)  BODY)
+;;       ╰─┬──╯
+;;    (VAR EXPR)
+
+;; dolist with result form
+(dolist (elt some-list result)  BODY)
+;;      ╰────────┬──────────╯
+;;      (VAR EXPR RESULT)
+#+end_src
+
+The =single= shape extracts the first element as the variable name and the
+second as the value. Additional elements (like the result form in =dolist=)
+are ignored.
+
+** Pattern: =error-var= shape
+
+Look for a bare symbol sitting directly at the binding index with no wrapping.
+
+#+begin_src elisp
+;; Pattern: bare symbol, not in a list
+(FUNC SYMBOL
+    PROTECTED
+  HANDLERS)
+#+end_src
+
+#+begin_quote
+[!TIP]
+Signs you have an =error-var= shape:
+
+- The binding site is a single symbol, not wrapped in any parentheses.
+- The macro binds exactly one name to some internally-determined value.
+- The macro's docstring says "VAR", "NAME", or shows a bare symbol in the
+  signature.
+- The value is not written by the user (it comes from an error signal, a
+  temporary file path, etc.).
+#+end_quote
+
+Examples:
+
+#+begin_src elisp
+;; condition-case: error-var at index 1, `handlers' scope
+(condition-case err  PROTECTED  (error HANDLER))
+;;              ╰┬╯
+;;            SYMBOL (bare, no parens)
+
+;; ert-with-temp-file: error-var at index 1, `body' scope
+(ert-with-temp-file path  BODY)
+;;                  ╰┬─╯
+;;               SYMBOL (bare)
+
+;; ert-with-message-capture: error-var at index 1, `body' scope
+(ert-with-message-capture log  BODY)
+;;                        ╰┬╯
+;;                     SYMBOL (bare)
+#+end_src
+
+The =error-var= shape reads one symbol directly from the binding index position.
+If the symbol is =nil=, no binding is created (as in =condition-case= with a nil
+error variable).
+
+** Decision flowchart
+When looking at a macro's binding site, ask yourself:
+
++ Is the binding site a bare symbol with no parentheses? -> =error-var=
++ Is the binding site a parenthesized form containing exactly one variable name followed by an expression? -> =single=
++ Is the binding site a list of =(VAR EXPR)= pairs (or bare symbols bound to nil)? -> =list=
++ Is the binding site a list of bare symbol names, possibly with =&optional= or =&rest= keywords? -> =arglist=
++ Does none of the above fit? -> Write a custom extractor (see [[#custom-extractors][Custom extractors]]).
+
+* STATUS
+:PROPERTIES:
+:CUSTOM_ID: status
+:END:
+- Implemented forms :: these forms were registered and tested, do let me know if
+  you get erroneous autocompletion candidates from any of these.
+
+| Symbol                         | Package  | Shape     | Index | Scope    | Tag      | Status | Extractor         |
+|--------------------------------+----------+-----------+-------+----------+----------+--------+-------------------|
+| ~let~                            | core     | list      |     1 | body     | "let"    | done   |                   |
+| ~let*~                           | core     | list      |     1 | body     | "let"    | done   |                   |
+| ~when-let*~                      | core     | list      |     1 | body     | "let"    | done   |                   |
+| ~and-let*~                       | core     | list      |     1 | body     | "let"    | done   |                   |
+| ~dlet~                           | core     | list      |     1 | body     | "let"    | done   |                   |
+| ~letrec~                         | core     | list      |     1 | body     | "let"    | done   |                   |
+| ~cl-do~                          | core     | list      |     1 | body     | "do"     | done   |                   |
+| ~cl-do*~                         | core     | list      |     1 | body     | "do"     | done   |                   |
+| ~cl-symbol-macrolet~             | core     | list      |     1 | body     | "sym"    | done   |                   |
+| ~with-slots~                     | core     | list      |     1 | body     | "slot"   | done   |                   |
+| ~if-let~                         | core     | list      |     1 | then     | "let"    | done   |                   |
+| ~if-let*~                        | core     | list      |     1 | then     | "let"    | done   |                   |
+| ~named-let~                      | core     | list      |     2 | body     | "let"    | done   |                   |
+| ~lambda~                         | core     | arglist   |     1 | body     | "arg"    | done   |                   |
+| ~cl-destructuring-bind~          | core     | arglist   |     1 | body     | "arg"    | done   |                   |
+| ~cl-multiple-value-bind~         | core     | arglist   |     1 | body     | "mv"     | done   |                   |
+| ~cl-with-gensyms~                | core     | arglist   |     1 | body     | "gen"    | done   |                   |
+| ~cl-once-only~                   | core     | arglist   |     1 | body     | "gen"    | done   |                   |
+| ~defun~                          | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~defmacro~                       | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~defsubst~                       | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~cl-defun~                       | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~cl-defmacro~                    | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~cl-defsubst~                    | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~define-inline~                  | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~cl-defgeneric~                  | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~iter-defun~                     | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~cl-iter-defun~                  | core     | arglist   |     2 | body     | "arg"    | done   |                   |
+| ~dolist~                         | core     | single    |     1 | body     | "iter"   | done   |                   |
+| ~dotimes~                        | core     | single    |     1 | body     | "iter"   | done   |                   |
+| ~cl-do-symbols~                  | core     | single    |     1 | body     | "iter"   | done   |                   |
+| ~cl-do-all-symbols~              | core     | single    |     1 | body     | "iter"   | done   |                   |
+| ~dolist-with-progress-reporter~  | core     | single    |     1 | body     | "iter"   | done   |                   |
+| ~dotimes-with-progress-reporter~ | core     | single    |     1 | body     | "iter"   | done   |                   |
+| ~condition-case~                 | core     | error-var |     1 | handlers | "err"    | done   |                   |
+| ~condition-case-unless-debug~    | core     | error-var |     1 | handlers | "err"    | done   |                   |
+| ~ert-with-temp-file~             | core     | error-var |     1 | body     | "file"   | done   |                   |
+| ~ert-with-temp-directory~        | core     | error-var |     1 | body     | "dir"    | done   |                   |
+| ~ert-with-message-capture~       | core     | error-var |     1 | body     | "msg"    | done   |                   |
+| ~cl-defmethod~                   | core     | custom    |       |          | "arg"    | done   | extract-defmethod |
+| ~cl-flet~                        | core     | custom    |       |          | "fn"     | done   | extract-flet      |
+| ~cl-flet*~                       | core     | custom    |       |          | "fn*"    | done   | extract-flet      |
+| ~cl-labels~                      | core     | custom    |       |          | "fn**"   | done   | extract-flet      |
+| ~cl-macrolet~                    | core     | custom    |       |          | "mac"    | done   | extract-flet      |
+| ~cl-letf~                        | core     | custom    |       |          | "place"  | done   | extract-letf      |
+| ~cl-letf*~                       | core     | custom    |       |          | "place*" | done   | extract-letf      |
+| ~cond-let--and-let*~             | cond-let | list      |     1 | body     | "let"    | done   |                   |
+| ~cond-let--and-let~              | cond-let | list      |     1 | body     | "let"    | done   |                   |
+| ~cond-let--when-let*~            | cond-let | list      |     1 | body     | "let"    | done   |                   |
+| ~cond-let--when-let~             | cond-let | list      |     1 | body     | "let"    | done   |                   |
+| ~cond-let--while-let*~           | cond-let | list      |     1 | body     | "let"    | done   |                   |
+| ~cond-let--while-let~            | cond-let | list      |     1 | body     | "let"    | done   |                   |
+| ~cond-let--if-let*~              | cond-let | list      |     1 | then     | "let"    | done   |                   |
+| ~cond-let--if-let~               | cond-let | list      |     1 | then     | "let"    | done   |                   |
+
+
+- Deferred (core forms needing custom extractors) :: I'm leaving these for last,
+  they're highly complex and I need a bit more time to understand their
+  signatures (specially cl-loop and dash). I'm going by order so first I'll
+  finish pcase and then move on to the others.
+
+| Symbol          | Package  | Reason                                             | Complexity | Status      |
+|-----------------+----------+----------------------------------------------------+------------+-------------|
+| ~pcase-let~       | core     | Recursive pattern walker, complex edge cases       | MEDIUM     | In Progress |
+| ~pcase-let*~      | core     | Same                                               | MEDIUM     | In Progress |
+| ~pcase-dolist~    | core     | Same                                               | MEDIUM     | In Progress |
+| ~pcase-lambda~    | core     | Same                                               | MEDIUM     | In Progress |
+| ~cond-let--and$~  | cond-let | Binds fixed name ~$~, no user-written symbol         | LOW        |             |
+| ~cond-let--when$~ | cond-let | Binds fixed name ~$~, no user-written symbol         | LOW        |             |
+| ~cond-let--and>~  | cond-let | Binds fixed name ~$~ repeatedly                      | LOW        |             |
+| ~cond-let*~       | cond-let | Vector clause syntax, cross-clause scope           | HIGH       |             |
+| ~cond-let~        | cond-let | Vector clause syntax, cross-clause scope           | HIGH       |             |
+| ~-lambda~         | dash     | Dash pattern language needs custom extractor       | MEDIUM     |             |
+| ~-let~            | dash     | Dash pattern language needs custom extractor       | HIGH       |             |
+| ~-let*~           | dash     | Dash pattern language needs custom extractor       | HIGH       |             |
+| ~cl-loop~         | core     | Interspersed clause syntax, no fixed binding index | HIGH       |             |
+
+- Won't Add :: cl-progv and cl-tagbody make no sense since they don't bind
+  anything that you would then need to autocomplete. The other 3 are mostly
+  trivial to implement but they're too niche, do let me know if you need them.
+
+| Symbol                  | Reason                              |
+|-------------------------+-------------------------------------|
+| ~cl-progv~                | Binding names determined at runtime |
+| ~cl-tagbody~              | No variable bindings                |
+| ~emacsql-with-connection~ | idk                                 |
+| ~evil-motion-loop~        | idk                                 |
+| ~org-dlet~                | idk                                 |
