@@ -663,7 +663,9 @@ Skip any binding whose span contains COMPLETION-POS.
 
 Compound entries are processed by the local helper `extract-compound',
 which extracts the name via `scan-sexps' and the value via
-`read-from-string' with silent fallback to nil.
+`read-from-string' with silent fallback to nil.  Entries where the
+name position holds a list (expression-only checks in `and-let*' and
+similar forms) are rejected.
 
 Return alist of (NAME-STRING TAG-STRING VALUE-OR-NIL) lists.
 
@@ -675,10 +677,15 @@ Called by `let-completion--extract-shape'."
       (cl-flet
           ;; Extract name and value from a compound binding (VAR EXPR)
           ;; between B-START and B-END.  Return (NAME TAG VALUE) or nil.
+          ;; Reject entries where the name position holds a list, which
+          ;; indicates an expression-only check (no binding created).
           ((extract-compound (b-start b-end)
              (save-excursion
                (goto-char (1+ b-start))
                (forward-comment (buffer-size))
+               (when (eq (char-after (point)) ?\()
+                 ;; -- Reject: name position is a list, not a symbol.
+                 (cl-return-from extract-compound nil))
                (let ((name-start (point))
                      (name-end (ignore-errors (scan-sexps (point) 1))))
                  (when name-end
