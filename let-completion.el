@@ -460,7 +460,7 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'cl-do*
   '(:bindings-index 1 :binding-shape list :scope body :tag "cl-do*"))
 (let-completion-register-binding-form 'cl-symbol-macrolet
-  '(:bindings-index 1 :binding-shape list :scope body :tag "cl-sym-macrolet"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cl-sym-mlet"))
 (let-completion-register-binding-form 'with-slots
   '(:bindings-index 1 :binding-shape list :scope body :tag "with-slots"))
 
@@ -486,7 +486,7 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'cl-multiple-value-setq
   '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-multi-vsetq"))
 (let-completion-register-binding-form 'cl-with-gensyms
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-with-gensyms"))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-wgensyms"))
 (let-completion-register-binding-form 'cl-once-only
   '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-once-only"))
 
@@ -1341,7 +1341,7 @@ is captured by the completion ui and persists for the session.
 
 Also see `let-completion-locals-only-mode'."
   (interactive)
-  (let ((let-completion-locals-only-mode t))
+  (let ((let-completion-locals-only t))
     (completion-at-point)))
 
 ;;;; Advice
