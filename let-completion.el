@@ -36,20 +36,48 @@
 ;; `:company-doc-buffer'.
 ;;
 ;; Binding form recognition is data-driven via a registry of
-;; descriptors stored as symbol properties.  Built-in forms (`let',
-;; `let*', `defun', `lambda', `dolist', `condition-case', etc.) are
-;; registered at load time.  Third-party macros opt in by calling
-;; `let-completion-register-binding-form'.
+;; descriptors stored as symbol properties.  46 built-in forms
+;; (`let', `let*', `defun', `lambda', `cl-defun', `dolist',
+;; `condition-case', `cl-flet', `cl-letf', `cl-defmethod', etc.)
+;; are registered at load time.  Third-party macros opt in by
+;; calling `let-completion-register-binding-form' with a plist
+;; describing where bindings sit and what shape they take, or by
+;; providing a custom extractor function for exotic syntax.
+;;
+;; The package installs a single around-advice on
+;; `elisp-completion-at-point' when enabled and removes it when
+;; disabled.  Loading produces no side effects beyond symbol
+;; property registrations.
 ;;
 ;; Usage:
 ;;
 ;;     (add-hook 'emacs-lisp-mode-hook #'let-completion-mode)
+;;
+;; To show only local candidates for a single invocation:
+;;
+;;     M-x let-completion-locals-only-complete
+;;
+;; Or persistently with `let-completion-locals-only-mode'.
+;;
+;; Recommended configuration for the detail column:
+;;
+;;     (setq let-completion-tag-kind-alist
+;;           '((lambda          . "λ")
+;;             (function        . "𝘧")
+;;             (cl-function     . "𝘧")
+;;             (make-hash-table . "#s")
+;;             (quote           . "'")
+;;             (cons            . "cons")
+;;             (list            . "list")))
 ;;
 ;; Customize `let-completion-inline-max-width' to control the
 ;; threshold for inline value display.  Customize
 ;; `let-completion-tag-kind-alist' to map value heads to kind
 ;; strings.  Customize `let-completion-detail-functions' for full
 ;; control over the detail column content.
+;;
+;; See the README for the complete recommended configuration
+;; including tag shortening, kind alist, and face overrides.
 ;;; Code:
 
 (require 'cl-lib)
@@ -166,6 +194,22 @@ Also see `let-completion-tag-context-format'."
   :type '(choice natnum (const :tag "Disable" nil))
   :group 'let-completion)
 
+
+(defcustom let-completion-tag-alist nil
+  "Alist mapping binding form symbols to replacement tag strings.
+Each entry is (SYMBOL . TAG-STRING).  When a binding form's head
+symbol matches SYMBOL, TAG-STRING replaces the tag from the
+registry descriptor before any refinement via
+`let-completion-tag-refine-alist' or
+`let-completion-tag-refine-functions'.
+
+Example:
+
+    \\='((cond-let--and-let* . \"clet\")
+      (dolist . \"each\")
+      (condition-case . \"rescue\"))"
+  :type '(alist :key-type symbol :value-type string))
+
 (defcustom let-completion-tag-refine-alist nil
   "Alist mapping (HEAD-SYMBOL . VALUE-HEAD) to replacement tag strings.
 Each key is a cons of (SYMBOL . SYMBOL-OR-NIL) where the car is
@@ -187,20 +231,22 @@ Also see `let-completion-tag-refine-functions' and
   :type '(alist :key-type (cons symbol symbol)
                 :value-type string))
 
-(defcustom let-completion-tag-alist nil
-  "Alist mapping binding form symbols to replacement tag strings.
-Each entry is (SYMBOL . TAG-STRING).  When a binding form's head
-symbol matches SYMBOL, TAG-STRING replaces the tag from the
-registry descriptor before any refinement via
-`let-completion-tag-refine-alist' or
-`let-completion-tag-refine-functions'.
+(defcustom let-completion-tag-refine-functions nil
+  "List of functions to refine provenance tag strings (right column).
+Each function receives four arguments: NAME (string), TAG
+\(string), VALUE (the raw sexp or nil), and CONTEXT (string or
+nil, the enclosing function name).  Return a replacement tag
+string, or nil to pass unchanged to the next function.
 
-Example:
+Functions run in order.  Each receives the tag as modified by all
+previous functions.  The final tag is used for the right column.
 
-    \\='((cond-let--and-let* . \"clet\")
-      (dolist . \"each\")
-      (condition-case . \"rescue\"))"
-  :type '(alist :key-type symbol :value-type string))
+This list runs after `let-completion-tag-refine-alist' is
+consulted.
+
+Also see `let-completion-tag-refine-alist' and
+`let-completion-detail-functions'."
+  :type '(repeat function))
 
 (defcustom let-completion-tag-kind-alist nil
   "Alist mapping value heads to kind strings for the detail column.
@@ -223,23 +269,6 @@ Example:
 Also see `let-completion-detail-functions'."
   :type '(alist :key-type symbol :value-type string)
   :group 'let-completion)
-
-(defcustom let-completion-tag-refine-functions nil
-  "List of functions to refine provenance tag strings (right column).
-Each function receives four arguments: NAME (string), TAG
-\(string), VALUE (the raw sexp or nil), and CONTEXT (string or
-nil, the enclosing function name).  Return a replacement tag
-string, or nil to pass unchanged to the next function.
-
-Functions run in order.  Each receives the tag as modified by all
-previous functions.  The final tag is used for the right column.
-
-This list runs after `let-completion-tag-refine-alist' is
-consulted.
-
-Also see `let-completion-tag-refine-alist' and
-`let-completion-detail-functions'."
-  :type '(repeat function))
 
 (defcustom let-completion-detail-functions nil
   "List of functions to compute detail column content.
@@ -334,7 +363,7 @@ Also see `let-completion-context-max-width'."
   :type '(choice face (const :tag "Disable" nil))
   :group 'let-completion)
 
-;;;; Binding Form Registry
+;;;; Internal Variables
 
 (defvar-local let-completion-binding-forms nil
   "Buffer-local alist overriding binding form descriptors.
@@ -342,6 +371,21 @@ Each entry is (SYMBOL . SPEC) where SPEC is a plist or function.
 Takes priority over symbol properties at lookup time.
 
 Set by major mode hooks for non-Elisp Lisp dialects.")
+
+(defvar let-completion--doc-buffer nil
+  "Reusable buffer for pretty-printed binding values.
+Created on first use by the function `let-completion--doc-buffer'.
+Consumed by corfu-popupinfo via `:company-doc-buffer'.")
+
+(defvar-local let-completion-locals-only nil
+  "When non-nil, show only locally bound candidates.
+Toggle with `let-completion-locals-only-mode' for persistent
+filtering, or use `let-completion-locals-only-complete' for a
+single invocation.
+
+Also see `let-completion--advice'.")
+
+;;;; Binding Form Registry
 
 (defun let-completion-register-binding-form (symbol spec)
   "Register SYMBOL as a binding form with descriptor SPEC.
@@ -1230,11 +1274,6 @@ Called by `let-completion--advice'."
 
 ;;;; Doc Buffer
 
-(defvar let-completion--doc-buffer nil
-  "Reusable buffer for pretty-printed binding values.
-Created on first use by the function `let-completion--doc-buffer'.
-Consumed by corfu-popupinfo via `:company-doc-buffer'.")
-
 (defun let-completion--doc-buffer ()
   "Return reusable doc buffer with `emacs-lisp-mode' initialized.
 The buffer is created once and reused across calls.  Mode setup
@@ -1280,6 +1319,30 @@ Called by `let-completion--advice'."
         (complete-with-action action
                               (completion-table-merge table local-table)
                               string pred))))))
+
+;;;; Locals-Only Completion
+
+(define-minor-mode let-completion-locals-only-mode
+  "Toggle showing only locally bound candidates.
+When enabled, completion shows only variables from enclosing
+binding forms, filtering out all global symbols.
+
+Also see `let-completion-locals-only'."
+  :lighter " LC:local"
+  :group 'let-completion
+  (setq let-completion-locals-only let-completion-locals-only-mode))
+
+;;;###autoload
+(defun let-completion-locals-only-complete ()
+  "Complete at point showing only locally bound candidates.
+temporarily restricts completion to variables from enclosing
+binding forms for a single invocation.  the local-only table
+is captured by the completion ui and persists for the session.
+
+Also see `let-completion-locals-only-mode'."
+  (interactive)
+  (let ((let-completion-locals-only-mode t))
+    (completion-at-point)))
 
 ;;;; Advice
 
@@ -1547,7 +1610,14 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                       (nconc
                        (list (nth 0 result) (nth 1 result)
                              (let-completion--make-table
-                              (nth 2 result) sort-fn local-names)
+                              (if let-completion-locals-only
+                                  ;; -- Locals only: restrict to extracted names.
+                                  (lambda (string pred action)
+                                    (complete-with-action action
+                                                          local-names string pred))
+                                ;; -- Normal: merge locals into original table.
+                                (nth 2 result))
+                              sort-fn local-names)
                              :annotation-function ann-fn
                              :company-doc-buffer doc-fn)
                        (cl-loop for (k v) on plist by #'cddr
