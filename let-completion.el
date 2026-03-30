@@ -402,33 +402,33 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'let
   '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
 (let-completion-register-binding-form 'let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let*"))
 (let-completion-register-binding-form 'when-let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "when-let*"))
 (let-completion-register-binding-form 'and-let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "and-let*"))
 (let-completion-register-binding-form 'dlet
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "dlet"))
 (let-completion-register-binding-form 'letrec
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "letrec"))
 (let-completion-register-binding-form 'cl-do
-  '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cl-do"))
 (let-completion-register-binding-form 'cl-do*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "do"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cl-do*"))
 (let-completion-register-binding-form 'cl-symbol-macrolet
-  '(:bindings-index 1 :binding-shape list :scope body :tag "sym"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cl-sym-macrolet"))
 (let-completion-register-binding-form 'with-slots
-  '(:bindings-index 1 :binding-shape list :scope body :tag "slot"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "with-slots"))
 
 ;; Index 1, then scope.
 (let-completion-register-binding-form 'if-let
-  '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope then :tag "if-let"))
 (let-completion-register-binding-form 'if-let*
-  '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope then :tag "if-let*"))
 
 ;; Index 2, body scope.
 (let-completion-register-binding-form 'named-let
-  '(:bindings-index 2 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 2 :binding-shape list :scope body :tag "named-let"))
 
 ;;;;;; arglist shape: (ARG &optional ARG2 &rest ARG3) parameters
 
@@ -438,11 +438,13 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'cl-destructuring-bind
   '(:bindings-index 1 :binding-shape arglist :scope body :tag "arg"))
 (let-completion-register-binding-form 'cl-multiple-value-bind
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "mv"))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-multi-vbind"))
+(let-completion-register-binding-form 'cl-multiple-value-setq
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-multi-vsetq"))
 (let-completion-register-binding-form 'cl-with-gensyms
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "gen"))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-with-gensyms"))
 (let-completion-register-binding-form 'cl-once-only
-  '(:bindings-index 1 :binding-shape arglist :scope body :tag "gen"))
+  '(:bindings-index 1 :binding-shape arglist :scope body :tag "cl-once-only"))
 
 ;; Index 2, body scope.
 (let-completion-register-binding-form 'defun
@@ -469,48 +471,47 @@ Return SPEC or nil."
 ;;;;;; single shape: (VAR EXPR) one binding
 
 (let-completion-register-binding-form 'dolist
-  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "dolist"))
 (let-completion-register-binding-form 'dotimes
-  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "dotimes"))
 (let-completion-register-binding-form 'cl-do-symbols
-  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "cl-do-symbols"))
 (let-completion-register-binding-form 'cl-do-all-symbols
-  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "cl-do-all-sym"))
 (let-completion-register-binding-form 'dolist-with-progress-reporter
-  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "dolist-pr"))
 (let-completion-register-binding-form 'dotimes-with-progress-reporter
-  '(:bindings-index 1 :binding-shape single :scope body :tag "iter"))
+  '(:bindings-index 1 :binding-shape single :scope body :tag "dotimes-pr"))
 
 ;;;;;; error-var shape: bare symbol
 
 (let-completion-register-binding-form 'condition-case
-  '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
+  '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "cond-case"))
 (let-completion-register-binding-form 'condition-case-unless-debug
-  '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "err"))
+  '(:bindings-index 1 :binding-shape error-var :scope handlers :tag "cond-case"))
 (let-completion-register-binding-form 'ert-with-temp-file
-  '(:bindings-index 1 :binding-shape error-var :scope body :tag "file"))
+  '(:bindings-index 1 :binding-shape error-var :scope body :tag "ert-tmp-file"))
 (let-completion-register-binding-form 'ert-with-temp-directory
-  '(:bindings-index 1 :binding-shape error-var :scope body :tag "dir"))
+  '(:bindings-index 1 :binding-shape error-var :scope body :tag "ert-tmp-dir"))
 (let-completion-register-binding-form 'ert-with-message-capture
-  '(:bindings-index 1 :binding-shape error-var :scope body :tag "msg"))
+  '(:bindings-index 1 :binding-shape error-var :scope body :tag "ert-msg-cap"))
 
 ;;;;;; Custom extractors
 
 (let-completion-register-binding-form 'cl-flet
-  '(:extractor let-completion--extract-flet :tag "fn"))
+  '(:extractor let-completion--extract-flet :tag "cl-flet"))
 (let-completion-register-binding-form 'cl-flet*
-  '(:extractor let-completion--extract-flet :tag "fn*"))
+  '(:extractor let-completion--extract-flet :tag "cl-flet*"))
 (let-completion-register-binding-form 'cl-labels
-  '(:extractor let-completion--extract-flet :tag "fn**"))
+  '(:extractor let-completion--extract-flet :tag "cl-labels"))
 (let-completion-register-binding-form 'cl-macrolet
-  '(:extractor let-completion--extract-flet :tag "mac"))
+  '(:extractor let-completion--extract-flet :tag "cl-macrolet"))
 (let-completion-register-binding-form 'cl-letf
-  '(:extractor let-completion--extract-letf :tag "place"))
+  '(:extractor let-completion--extract-letf :tag "cl-letf"))
 (let-completion-register-binding-form 'cl-letf*
-  '(:extractor let-completion--extract-letf :tag "place*"))
+  '(:extractor let-completion--extract-letf :tag "cl-letf*"))
 (let-completion-register-binding-form 'cl-defmethod
-  '(:extractor let-completion--extract-defmethod :tag "arg"))
-
+  '(:extractor let-completion--extract-defmethod :tag "cl-defmethod"))
 
 ;;;; Scope Checking
 
