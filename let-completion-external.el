@@ -48,23 +48,23 @@
 
 ;; body scope: bindings visible in all body forms.
 (let-completion-register-binding-form 'cond-let--and-let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cond-and-let*"))
 (let-completion-register-binding-form 'cond-let--and-let
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cond-and-let"))
 (let-completion-register-binding-form 'cond-let--when-let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cond-when-let*"))
 (let-completion-register-binding-form 'cond-let--when-let
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cond-when-let"))
 (let-completion-register-binding-form 'cond-let--while-let*
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cond-while-let*"))
 (let-completion-register-binding-form 'cond-let--while-let
-  '(:bindings-index 1 :binding-shape list :scope body :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope body :tag "cond-while-let"))
 
 ;; then scope: bindings visible only in the first form after bindings.
 (let-completion-register-binding-form 'cond-let--if-let*
-  '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope then :tag "cond-if-let*"))
 (let-completion-register-binding-form 'cond-let--if-let
-  '(:bindings-index 1 :binding-shape list :scope then :tag "let"))
+  '(:bindings-index 1 :binding-shape list :scope then :tag "cond-if-let"))
 
 (provide 'let-completion-external)
 ;;; let-completion-external.el ends here
