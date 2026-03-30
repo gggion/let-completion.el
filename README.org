@@ -42,12 +42,29 @@ enabled and removes it when disabled.
 - [[#status][STATUS]]
 :END:
 * Install
-:PROPERTIES:
-:CUSTOM_ID: install
-:END:
 
-Available on MELPA.
+- MELPA (recommended) ::
+#+begin_src emacs-lisp
+(use-package let-completion
+  :hook (emacs-lisp-mode . let-completion-mode))
+#+end_src
 
+- use-package with vc (Emacs 30+) ::
+#+begin_src emacs-lisp
+(use-package let-completion
+  :vc (:url "https://github.com/gggion/let-completion.el"
+       :rev :newest)
+  :hook (emacs-lisp-mode . let-completion-mode))
+#+end_src
+
+- Straight or Elpaca ::
+#+begin_src emacs-lisp
+(straight-use-package 'let-completion)
+;; OR
+(elpaca let-completion)
+
+(add-hook 'emacs-lisp-mode-hook #'let-completion-mode)
+#+end_src
 * Configuration
 :PROPERTIES:
 :CUSTOM_ID: configuration
