@@ -1209,62 +1209,63 @@ When looking at a macro's binding site, ask yourself:
 - Implemented forms :: these forms were registered and tested, do let me know if
   you get erroneous autocompletion candidates from any of these.
 
-| Symbol                         | Package  | Shape     | Index | Scope    | Tag      | Status | Extractor         |
-|--------------------------------+----------+-----------+-------+----------+----------+--------+-------------------|
-| ~let~                            | core     | list      |     1 | body     | "let"    | done   |                   |
-| ~let*~                           | core     | list      |     1 | body     | "let"    | done   |                   |
-| ~when-let*~                      | core     | list      |     1 | body     | "let"    | done   |                   |
-| ~and-let*~                       | core     | list      |     1 | body     | "let"    | done   |                   |
-| ~dlet~                           | core     | list      |     1 | body     | "let"    | done   |                   |
-| ~letrec~                         | core     | list      |     1 | body     | "let"    | done   |                   |
-| ~cl-do~                          | core     | list      |     1 | body     | "do"     | done   |                   |
-| ~cl-do*~                         | core     | list      |     1 | body     | "do"     | done   |                   |
-| ~cl-symbol-macrolet~             | core     | list      |     1 | body     | "sym"    | done   |                   |
-| ~with-slots~                     | core     | list      |     1 | body     | "slot"   | done   |                   |
-| ~if-let~                         | core     | list      |     1 | then     | "let"    | done   |                   |
-| ~if-let*~                        | core     | list      |     1 | then     | "let"    | done   |                   |
-| ~named-let~                      | core     | list      |     2 | body     | "let"    | done   |                   |
-| ~lambda~                         | core     | arglist   |     1 | body     | "arg"    | done   |                   |
-| ~cl-destructuring-bind~          | core     | arglist   |     1 | body     | "arg"    | done   |                   |
-| ~cl-multiple-value-bind~         | core     | arglist   |     1 | body     | "mv"     | done   |                   |
-| ~cl-with-gensyms~                | core     | arglist   |     1 | body     | "gen"    | done   |                   |
-| ~cl-once-only~                   | core     | arglist   |     1 | body     | "gen"    | done   |                   |
-| ~defun~                          | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~defmacro~                       | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~defsubst~                       | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~cl-defun~                       | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~cl-defmacro~                    | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~cl-defsubst~                    | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~define-inline~                  | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~cl-defgeneric~                  | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~iter-defun~                     | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~cl-iter-defun~                  | core     | arglist   |     2 | body     | "arg"    | done   |                   |
-| ~dolist~                         | core     | single    |     1 | body     | "iter"   | done   |                   |
-| ~dotimes~                        | core     | single    |     1 | body     | "iter"   | done   |                   |
-| ~cl-do-symbols~                  | core     | single    |     1 | body     | "iter"   | done   |                   |
-| ~cl-do-all-symbols~              | core     | single    |     1 | body     | "iter"   | done   |                   |
-| ~dolist-with-progress-reporter~  | core     | single    |     1 | body     | "iter"   | done   |                   |
-| ~dotimes-with-progress-reporter~ | core     | single    |     1 | body     | "iter"   | done   |                   |
-| ~condition-case~                 | core     | error-var |     1 | handlers | "err"    | done   |                   |
-| ~condition-case-unless-debug~    | core     | error-var |     1 | handlers | "err"    | done   |                   |
-| ~ert-with-temp-file~             | core     | error-var |     1 | body     | "file"   | done   |                   |
-| ~ert-with-temp-directory~        | core     | error-var |     1 | body     | "dir"    | done   |                   |
-| ~ert-with-message-capture~       | core     | error-var |     1 | body     | "msg"    | done   |                   |
-| ~cl-defmethod~                   | core     | custom    |       |          | "arg"    | done   | extract-defmethod |
-| ~cl-flet~                        | core     | custom    |       |          | "fn"     | done   | extract-flet      |
-| ~cl-flet*~                       | core     | custom    |       |          | "fn*"    | done   | extract-flet      |
-| ~cl-labels~                      | core     | custom    |       |          | "fn**"   | done   | extract-flet      |
-| ~cl-macrolet~                    | core     | custom    |       |          | "mac"    | done   | extract-flet      |
-| ~cl-letf~                        | core     | custom    |       |          | "place"  | done   | extract-letf      |
-| ~cl-letf*~                       | core     | custom    |       |          | "place*" | done   | extract-letf      |
-| ~cond-let--and-let*~             | cond-let | list      |     1 | body     | "let"    | done   |                   |
-| ~cond-let--and-let~              | cond-let | list      |     1 | body     | "let"    | done   |                   |
-| ~cond-let--when-let*~            | cond-let | list      |     1 | body     | "let"    | done   |                   |
-| ~cond-let--when-let~             | cond-let | list      |     1 | body     | "let"    | done   |                   |
-| ~cond-let--while-let*~           | cond-let | list      |     1 | body     | "let"    | done   |                   |
-| ~cond-let--while-let~            | cond-let | list      |     1 | body     | "let"    | done   |                   |
-| ~cond-let--if-let*~              | cond-let | list      |     1 | then     | "let"    | done   |                   |
-| ~cond-let--if-let~               | cond-let | list      |     1 | then     | "let"    | done   |                   |
+| Symbol                         | Package  | Shape     | Index | Scope    | Tag              | Status | Extractor         |
+|--------------------------------+----------+-----------+-------+----------+------------------+--------+-------------------|
+| ~let~                            | core     | list      |     1 | body     | "let"            | done   |                   |
+| ~let*~                           | core     | list      |     1 | body     | "let*"           | done   |                   |
+| ~when-let*~                      | core     | list      |     1 | body     | "when-let*"      | done   |                   |
+| ~and-let*~                       | core     | list      |     1 | body     | "and-let*"       | done   |                   |
+| ~dlet~                           | core     | list      |     1 | body     | "dlet"           | done   |                   |
+| ~letrec~                         | core     | list      |     1 | body     | "letrec"         | done   |                   |
+| ~cl-do~                          | core     | list      |     1 | body     | "cl-do"          | done   |                   |
+| ~cl-do*~                         | core     | list      |     1 | body     | "cl-do*"         | done   |                   |
+| ~cl-symbol-macrolet~             | core     | list      |     1 | body     | "cl-sym-mlet"    | done   |                   |
+| ~with-slots~                     | core     | list      |     1 | body     | "with-slots"     | done   |                   |
+| ~if-let~                         | core     | list      |     1 | then     | "if-let"         | done   |                   |
+| ~if-let*~                        | core     | list      |     1 | then     | "if-let*"        | done   |                   |
+| ~named-let~                      | core     | list      |     2 | body     | "named-let"      | done   |                   |
+| ~lambda~                         | core     | arglist   |     1 | body     | "arg"            | done   |                   |
+| ~cl-destructuring-bind~          | core     | arglist   |     1 | body     | "arg"            | done   |                   |
+| ~cl-multiple-value-bind~         | core     | arglist   |     1 | body     | "cl-multi-vbind" | done   |                   |
+| ~cl-multiple-value-setq~         | core     | arglist   |     1 | body     | "cl-multi-vsetq" | done   |                   |
+| ~cl-with-gensyms~                | core     | arglist   |     1 | body     | "cl-wgensyms"    | done   |                   |
+| ~cl-once-only~                   | core     | arglist   |     1 | body     | "cl-once-only"   | done   |                   |
+| ~defun~                          | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~defmacro~                       | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~defsubst~                       | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~cl-defun~                       | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~cl-defmacro~                    | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~cl-defsubst~                    | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~define-inline~                  | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~cl-defgeneric~                  | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~iter-defun~                     | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~cl-iter-defun~                  | core     | arglist   |     2 | body     | "arg"            | done   |                   |
+| ~dolist~                         | core     | single    |     1 | body     | "dolist"         | done   |                   |
+| ~dotimes~                        | core     | single    |     1 | body     | "dotimes"        | done   |                   |
+| ~cl-do-symbols~                  | core     | single    |     1 | body     | "cl-do-symbols"  | done   |                   |
+| ~cl-do-all-symbols~              | core     | single    |     1 | body     | "cl-do-all-sym"  | done   |                   |
+| ~dolist-with-progress-reporter~  | core     | single    |     1 | body     | "dolist-pr"      | done   |                   |
+| ~dotimes-with-progress-reporter~ | core     | single    |     1 | body     | "dotimes-pr"     | done   |                   |
+| ~condition-case~                 | core     | error-var |     1 | handlers | "cond-case"      | done   |                   |
+| ~condition-case-unless-debug~    | core     | error-var |     1 | handlers | "cond-case"      | done   |                   |
+| ~ert-with-temp-file~             | core     | error-var |     1 | body     | "ert-tmp-file"   | done   |                   |
+| ~ert-with-temp-directory~        | core     | error-var |     1 | body     | "ert-tmp-dir"    | done   |                   |
+| ~ert-with-message-capture~       | core     | error-var |     1 | body     | "ert-msg-cap"    | done   |                   |
+| ~cl-defmethod~                   | core     | custom    |       |          | "cl-defmethod"   | done   | extract-defmethod |
+| ~cl-flet~                        | core     | custom    |       |          | "cl-flet"        | done   | extract-flet      |
+| ~cl-flet*~                       | core     | custom    |       |          | "cl-flet*"       | done   | extract-flet      |
+| ~cl-labels~                      | core     | custom    |       |          | "cl-labels"      | done   | extract-flet      |
+| ~cl-macrolet~                    | core     | custom    |       |          | "cl-macrolet"    | done   | extract-flet      |
+| ~cl-letf~                        | core     | custom    |       |          | "cl-letf"        | done   | extract-letf      |
+| ~cl-letf*~                       | core     | custom    |       |          | "cl-letf*"       | done   | extract-letf      |
+| ~cond-let--and-let*~             | cond-let | list      |     1 | body     | "cond-and-let*"  | done   |                   |
+| ~cond-let--and-let~              | cond-let | list      |     1 | body     | "cond-and-let"   | done   |                   |
+| ~cond-let--when-let*~            | cond-let | list      |     1 | body     | "cond-when-let*" | done   |                   |
+| ~cond-let--when-let~             | cond-let | list      |     1 | body     | "cond-when-let"  | done   |                   |
+| ~cond-let--while-let*~           | cond-let | list      |     1 | body     | "cond-while-let*"| done   |                   |
+| ~cond-let--while-let~            | cond-let | list      |     1 | body     | "cond-while-let" | done   |                   |
+| ~cond-let--if-let*~              | cond-let | list      |     1 | then     | "cond-if-let*"   | done   |                   |
+| ~cond-let--if-let~               | cond-let | list      |     1 | then     | "cond-if-let"    | done   |                   |
 
 
 - Deferred (core forms needing custom extractors) :: I'm leaving these for last,
