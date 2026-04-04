@@ -1273,21 +1273,22 @@ When looking at a macro's binding site, ask yourself:
   signatures (specially cl-loop and dash). I'm going by order so first I'll
   finish pcase and then move on to the others.
 
-| Symbol          | Package  | Reason                                             | Complexity | Status      |
-|-----------------+----------+----------------------------------------------------+------------+-------------|
-| ~pcase-let~       | core     | Recursive pattern walker, complex edge cases       | MEDIUM     | In Progress |
-| ~pcase-let*~      | core     | Same                                               | MEDIUM     | In Progress |
-| ~pcase-dolist~    | core     | Same                                               | MEDIUM     | In Progress |
-| ~pcase-lambda~    | core     | Same                                               | MEDIUM     | In Progress |
-| ~cond-let--and$~  | cond-let | Binds fixed name ~$~, no user-written symbol         | LOW        |             |
-| ~cond-let--when$~ | cond-let | Binds fixed name ~$~, no user-written symbol         | LOW        |             |
-| ~cond-let--and>~  | cond-let | Binds fixed name ~$~ repeatedly                      | LOW        |             |
-| ~cond-let*~       | cond-let | Vector clause syntax, cross-clause scope           | HIGH       |             |
-| ~cond-let~        | cond-let | Vector clause syntax, cross-clause scope           | HIGH       |             |
-| ~-lambda~         | dash     | Dash pattern language needs custom extractor       | MEDIUM     |             |
-| ~-let~            | dash     | Dash pattern language needs custom extractor       | HIGH       |             |
-| ~-let*~           | dash     | Dash pattern language needs custom extractor       | HIGH       |             |
-| ~cl-loop~         | core     | Interspersed clause syntax, no fixed binding index | HIGH       |             |
+| Symbol          | Package  | Reason                                             | Complexity | Status          |
+|-----------------+----------+----------------------------------------------------+------------+-----------------|
+| ~pcase-let~       | core     | Recursive pattern walker, complex edge cases       | MEDIUM     | In Progress     |
+| ~pcase-let*~      | core     | Same                                               | MEDIUM     | In Progress     |
+| ~pcase-dolist~    | core     | Same                                               | MEDIUM     | In Progress     |
+| ~pcase-lambda~    | core     | Same                                               | MEDIUM     | In Progress     |
+| ~cond-let--and$~  | cond-let | Binds fixed name ~$~, no user-written symbol         | LOW        |                 |
+| ~cond-let--when$~ | cond-let | Binds fixed name ~$~, no user-written symbol         | LOW        |                 |
+| ~cond-let--and>~  | cond-let | Binds fixed name ~$~ repeatedly                      | LOW        |                 |
+| ~cond-let*~       | cond-let | Vector clause syntax, cross-clause scope           | HIGH       |                 |
+| ~cond-let~        | cond-let | Vector clause syntax, cross-clause scope           | HIGH       |                 |
+| ~-lambda~         | dash     | Dash pattern language needs custom extractor       | MEDIUM     |                 |
+| ~-let~            | dash     | Dash pattern language needs custom extractor       | HIGH       |                 |
+| ~-let*~           | dash     | Dash pattern language needs custom extractor       | HIGH       |                 |
+| ~cl-loop~         | core     | Interspersed clause syntax, no fixed binding index | HIGH       |                 |
+| ~futur-let*~      | futur    | uses -> and other weird edge cases                 | ?          | Draft (for fun) |
 
 - Won't Add :: cl-progv and cl-tagbody make no sense since they don't bind
   anything that you would then need to autocomplete. The other 3 are mostly

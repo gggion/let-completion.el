@@ -372,6 +372,40 @@ Takes priority over symbol properties at lookup time.
 
 Set by major mode hooks for non-Elisp Lisp dialects.")
 
+(defvar-local let-completion-tag-alist-local nil
+  "Buffer-local entries prepended to `let-completion-tag-alist'.
+Each entry is (SYMBOL . TAG-STRING).  Takes priority over the
+global alist because entries appear first in the merged lookup.
+
+Set via .dir-locals.el for per-project tag overrides.
+
+Also see `let-completion-tag-refine-alist-local' and
+`let-completion-tag-kind-alist-local'.")
+(put 'let-completion-tag-alist-local 'safe-local-variable #'listp)
+
+(defvar-local let-completion-tag-refine-alist-local nil
+  "Buffer-local entries prepended to `let-completion-tag-refine-alist'.
+Each key is (HEAD-SYMBOL . VALUE-HEAD).  Takes priority over the
+global alist because entries appear first in the merged lookup.
+
+Set via .dir-locals.el for per-project tag refinement.
+
+Also see `let-completion-tag-alist-local' and
+`let-completion-tag-kind-alist-local'.")
+(put 'let-completion-tag-refine-alist-local 'safe-local-variable #'listp)
+
+(defvar-local let-completion-tag-kind-alist-local nil
+  "Buffer-local entries prepended to `let-completion-tag-kind-alist'.
+Each entry is (VALUE-HEAD . KIND-STRING).  Takes priority over
+the global alist because entries appear first in the merged
+lookup.
+
+Set via .dir-locals.el for per-project kind strings.
+
+Also see `let-completion-tag-alist-local' and
+`let-completion-tag-refine-alist-local'.")
+(put 'let-completion-tag-kind-alist-local 'safe-local-variable #'listp)
+
 (defvar let-completion--doc-buffer nil
   "Reusable buffer for pretty-printed binding values.
 Created on first use by the function `let-completion--doc-buffer'.
@@ -1136,7 +1170,8 @@ appropriate shape extractor.
 
 If the descriptor contains an `:extractor' key, call that function
 with (POS COMPLETION-POS TAG) where TAG is resolved from
-`let-completion-tag-alist' first, then the `:tag' key.
+`let-completion-tag-alist-local' first, then
+`let-completion-tag-alist', then the `:tag' key.
 Otherwise dispatch via `let-completion--extract-by-spec'.
 
 Each returned entry has the structure
@@ -1159,8 +1194,10 @@ Called by `let-completion--binding-values'."
                (spec (when head-sym
                        (let-completion--lookup-spec head-sym))))
           (when spec
-            ;; -- Resolve: tag override from defcustom alist.
-            (let ((tag (or (alist-get head-sym let-completion-tag-alist)
+            ;; -- Resolve: tag from buffer-local alist, then defcustom
+            ;;    alist, then descriptor :tag.
+            (let ((tag (or (alist-get head-sym let-completion-tag-alist-local)
+                           (alist-get head-sym let-completion-tag-alist)
                            (plist-get spec :tag))))
               ;; -- Dispatch: extractor function or standard plist.
               (let* ((extractor (plist-get spec :extractor))
@@ -1362,6 +1399,11 @@ detail column (middle) showing value, kind, or context, and a
 tag column (right) showing the provenance tag.  Column widths
 are computed lazily on the first annotation request.
 
+Buffer-local alists (`let-completion-tag-alist-local',
+`let-completion-tag-refine-alist-local',
+`let-completion-tag-kind-alist-local') take priority over their
+global counterparts.
+
 Uses `let-completion--binding-values' to extract bindings.
 Uses `let-completion--make-table' to wrap the completion table.
 Uses `let-completion--doc-buffer' for the doc display buffer."
@@ -1386,14 +1428,18 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                        (when result (setq tag result)))))
 
                  ;; Tag pipeline (right column):
-                 ;; Stage 1: tag-alist or registry :tag (already resolved).
+                 ;; Stage 1: tag-alist-local or tag-alist or registry :tag
+                 ;;          (already resolved during extraction).
                  ;; Stage 2: refine alist on (head-sym . value-head).
+                 ;;          Buffer-local refine alist checked first.
                  ;; Stage 3: function list refinement.
                  (refine-tag (head-sym tag val c ctx)
                    (let* ((value-head (car-safe val))
                           (refine-key (cons head-sym value-head))
-                          (refined (cdr (assoc refine-key
-                                               let-completion-tag-refine-alist)))
+                          (refined (or (cdr (assoc refine-key
+                                                   let-completion-tag-refine-alist-local))
+                                       (cdr (assoc refine-key
+                                                   let-completion-tag-refine-alist))))
                           (tag (or refined tag)))
                      (run-refine-fns c tag val ctx)))
 
@@ -1443,9 +1489,12 @@ Uses `let-completion--doc-buffer' for the doc display buffer."
                            (cons s 'custom)))
                        (when-let* ((s (short-value-str val)))
                          (cons s 'value))
+                       ;; Buffer-local kind alist checked first.
                        (when-let* ((s (and val
-                                          (cdr (assq (car-safe val)
-                                                     let-completion-tag-kind-alist)))))
+                                          (or (cdr (assq (car-safe val)
+                                                         let-completion-tag-kind-alist-local))
+                                              (cdr (assq (car-safe val)
+                                                         let-completion-tag-kind-alist))))))
                          (cons s 'kind))
                        (when-let* ((_ show-ctx)
                                    (_ let-completion-tag-context-format)
