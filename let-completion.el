@@ -497,6 +497,8 @@ Return SPEC or nil."
   '(:bindings-index 1 :binding-shape list :scope body :tag "cl-sym-mlet"))
 (let-completion-register-binding-form 'with-slots
   '(:bindings-index 1 :binding-shape list :scope body :tag "with-slots"))
+(let-completion-register-binding-form 'let-when-compile
+  '(:bindings-index 1 :binding-shape list :scope body :tag "let-when-compile"))
 
 ;; Index 1, then scope.
 (let-completion-register-binding-form 'if-let
