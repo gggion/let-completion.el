@@ -1223,7 +1223,6 @@ When looking at a macro's binding site, ask yourself:
 | ~with-slots~                     | core     | list      |     1 | body     | "with-slots"       | done   |                   |
 | ~if-let~                         | core     | list      |     1 | then     | "if-let"           | done   |                   |
 | ~if-let*~                        | core     | list      |     1 | then     | "if-let*"          | done   |                   |
-| ~named-let~                      | core     | list      |     2 | body     | "named-let"        | done   |                   |
 | ~lambda~                         | core     | arglist   |     1 | body     | "arg"              | done   |                   |
 | ~cl-destructuring-bind~          | core     | arglist   |     1 | body     | "arg"              | done   |                   |
 | ~cl-multiple-value-bind~         | core     | arglist   |     1 | body     | "cl-multi-vbind"   | done   |                   |
@@ -1258,6 +1257,8 @@ When looking at a macro's binding site, ask yourself:
 | ~cl-macrolet~                    | core     | custom    |       |          | "cl-macrolet"      | done   | extract-flet      |
 | ~cl-letf~                        | core     | custom    |       |          | "cl-letf"          | done   | extract-letf      |
 | ~cl-letf*~                       | core     | custom    |       |          | "cl-letf*"         | done   | extract-letf      |
+| ~seq-let~                        | core     | custom    |       |          | "seq-let"          | done   | extract-seq-let   |
+| ~named-let~                      | core     | custom    |       |          | "named-let"        |        | extract-named-let |
 | ~cond-let--and-let*~             | cond-let | list      |     1 | body     | "cond-and-let*"    | done   |                   |
 | ~cond-let--and-let~              | cond-let | list      |     1 | body     | "cond-and-let"     | done   |                   |
 | ~cond-let--when-let*~            | cond-let | list      |     1 | body     | "cond-when-let*"   | done   |                   |
@@ -1266,7 +1267,6 @@ When looking at a macro's binding site, ask yourself:
 | ~cond-let--while-let~            | cond-let | list      |     1 | body     | "cond-while-let"   | done   |                   |
 | ~cond-let--if-let*~              | cond-let | list      |     1 | then     | "cond-if-let*"     | done   |                   |
 | ~cond-let--if-let~               | cond-let | list      |     1 | then     | "cond-if-let"      | done   |                   |
-| ~seq-let~                        | core     | list      |     1 | body     | "seq-let"          | done   | extract-seq-let   |
 | ~seq-doseq~                      | core     | single    |       |          | "doseq"            | done   |                   |
 | ~let-when-compile~               | core     | list      |     1 | body     | "let-when-compile" | done   |                   |
 

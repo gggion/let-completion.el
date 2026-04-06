@@ -506,9 +506,6 @@ Return SPEC or nil."
 (let-completion-register-binding-form 'if-let*
   '(:bindings-index 1 :binding-shape list :scope then :tag "if-let*"))
 
-;; Index 2, body scope.
-(let-completion-register-binding-form 'named-let
-  '(:bindings-index 2 :binding-shape list :scope body :tag "named-let"))
 
 ;;;;;; arglist shape: (ARG &optional ARG2 &rest ARG3) parameters
 
@@ -596,6 +593,8 @@ Return SPEC or nil."
   '(:extractor let-completion--extract-defmethod :tag "cl-defmethod"))
 (let-completion-register-binding-form 'seq-let
   '(:extractor let-completion--extract-seq-let :tag "seq-let"))
+(let-completion-register-binding-form 'named-let
+  '(:extractor let-completion--extract-named-let :tag "named-let"))
 
 ;;;; Scope Checking
 
@@ -1216,6 +1215,56 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                       (goto-char sym-end))
                   (error (goto-char args-end)))))
             result))))))
+
+(cl-defun let-completion--extract-named-let (pos completion-pos tag)
+  "Extract bindings from a `named-let' form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Navigate past the head symbol to NAME (index 1), which is bound
+as a local recursive function visible in BODY.  Capture NAME as
+context string.  Read BINDINGS (index 2) as list-shaped bindings.
+Check scope: COMPLETION-POS must be past the bindings sexp.
+
+Return alist of (NAME-STRING TAG-STRING VALUE-OR-NIL CONTEXT)
+lists or nil.
+
+Used for `named-let'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (forward-comment (buffer-size))
+    ;; -- Navigate: skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (unless head-end (cl-return-from let-completion--extract-named-let))
+      (goto-char head-end)
+      (forward-comment (buffer-size))
+      ;; -- Navigate: read NAME as function binding and context.
+      (let* ((name-start (point))
+             (name-end (ignore-errors (scan-sexps (point) 1))))
+        (unless name-end (cl-return-from let-completion--extract-named-let))
+        (let ((name (buffer-substring-no-properties name-start name-end)))
+          (goto-char name-end)
+          (forward-comment (buffer-size))
+          ;; -- Navigate: read BINDINGS boundaries.
+          (let ((bindings-start (point))
+                (bindings-end (ignore-errors (scan-sexps (point) 1))))
+            (unless bindings-end
+              (cl-return-from let-completion--extract-named-let))
+            ;; -- Scope: completion must be past bindings.
+            (unless (> completion-pos bindings-end)
+              (cl-return-from let-completion--extract-named-let))
+            ;; -- Extract: list-shaped bindings from BINDINGS sexp.
+            (let* ((bindings (let-completion--extract-shape-list
+                              bindings-start bindings-end
+                              completion-pos tag))
+                   ;; -- Entry: NAME as local function binding.
+                   (name-entry (list name "fn" nil name))
+                   ;; -- Attach: inject context into binding entries.
+                   (bindings (mapcar (lambda (entry)
+                                      (append entry (list name)))
+                                    bindings)))
+              (cons name-entry bindings))))))))
 
 ;;;; Dispatcher
 
