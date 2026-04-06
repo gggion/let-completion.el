@@ -594,6 +594,8 @@ Return SPEC or nil."
   '(:extractor let-completion--extract-letf :tag "cl-letf*"))
 (let-completion-register-binding-form 'cl-defmethod
   '(:extractor let-completion--extract-defmethod :tag "cl-defmethod"))
+(let-completion-register-binding-form 'seq-let
+  '(:extractor let-completion--extract-seq-let :tag "seq-let"))
 
 ;;;; Scope Checking
 
@@ -1163,6 +1165,57 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                           (append entry (list context)))
                         bindings)
               bindings)))))))
+
+(cl-defun let-completion--extract-seq-let (pos completion-pos tag)
+  "Extract variable names from a `seq-let' form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Navigate past the head symbol to ARGS (index 1), then past
+SEQUENCE (index 2).  Scope requires COMPLETION-POS past
+SEQUENCE.  Walk ARGS collecting bare symbols, skipping `_',
+`&rest', and `&'-prefixed keywords.  ARGS may be a list or
+vector; `scan-sexps' handles both delimiter types.
+
+Return alist of (NAME-STRING TAG-STRING nil) lists or nil.
+
+Used for `seq-let'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (forward-comment (buffer-size))
+    ;; -- Navigate: skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (unless head-end (cl-return-from let-completion--extract-seq-let))
+      (goto-char head-end)
+      (forward-comment (buffer-size))
+      ;; -- Navigate: read ARGS boundaries.
+      (let* ((args-start (point))
+             (args-end (ignore-errors (scan-sexps (point) 1))))
+        (unless args-end (cl-return-from let-completion--extract-seq-let))
+        (goto-char args-end)
+        (forward-comment (buffer-size))
+        ;; -- Navigate: skip SEQUENCE, check scope.
+        (let ((seq-end (ignore-errors (scan-sexps (point) 1))))
+          (unless (and seq-end (> completion-pos seq-end))
+            (cl-return-from let-completion--extract-seq-let))
+          ;; -- Walk: collect symbols from ARGS.
+          (goto-char (1+ args-start))
+          (let (result)
+            (while (progn (forward-comment (buffer-size))
+                          (< (point) (1- args-end)))
+              (let ((sym-start (point)))
+                (condition-case nil
+                    (let* ((sym-end (scan-sexps (point) 1))
+                           (name (buffer-substring-no-properties
+                                  sym-start sym-end)))
+                      (unless (or (<= sym-start completion-pos sym-end)
+                                  (string-prefix-p "&" name)
+                                  (string= name "_"))
+                        (push (list name tag nil) result))
+                      (goto-char sym-end))
+                  (error (goto-char args-end)))))
+            result))))))
 
 ;;;; Dispatcher
 
