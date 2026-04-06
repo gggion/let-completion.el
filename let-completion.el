@@ -562,6 +562,8 @@ Return SPEC or nil."
   '(:bindings-index 1 :binding-shape single :scope body :tag "dolist-pr"))
 (let-completion-register-binding-form 'dotimes-with-progress-reporter
   '(:bindings-index 1 :binding-shape single :scope body :tag "dotimes-pr"))
+(let-completion-register-binding-form 'seq-doseq
+  '(:bindings-index 1 :binding-shape single :scope body :tag "doseq"))
 
 ;;;;;; error-var shape: bare symbol
 
