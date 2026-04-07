@@ -595,6 +595,15 @@ Return SPEC or nil."
   '(:extractor let-completion--extract-seq-let :tag "seq-let"))
 (let-completion-register-binding-form 'named-let
   '(:extractor let-completion--extract-named-let :tag "named-let"))
+(let-completion-register-binding-form 'pcase-let
+  '(:extractor let-completion--extract-pcase-let :tag "pcase-let"))
+(let-completion-register-binding-form 'pcase-let*
+  '(:extractor let-completion--extract-pcase-let :tag "pcase-let*"))
+(let-completion-register-binding-form 'pcase-dolist
+  '(:extractor let-completion--extract-pcase-dolist :tag "pcase-dolist"))
+(let-completion-register-binding-form 'pcase-lambda
+  '(:extractor let-completion--extract-pcase-lambda :tag "pcase-λ"))
+
 
 ;;;; Scope Checking
 
@@ -716,6 +725,123 @@ Called by `let-completion--extract-shape-arglist' and
                 (goto-char inner-end))
             (error (goto-char end)))))))
   result)
+
+;;;; Pcase Pattern Variable Extraction
+
+(defun let-completion--pcase-pattern-vars (pattern)
+  "Extract variable names from a pcase PATTERN.
+Walk the pattern recursively and return a list of symbol names
+that the pattern would bind when matched.
+
+Handle backquote patterns, `and', `or', `let', `pred', `guard',
+`app', `cl-struct', `map', and plain symbol patterns.  Skip `_',
+t, nil, and keyword symbols.
+
+Called by `let-completion--extract-pcase-let' and related
+extractors."
+  (pcase pattern
+    ;; Ignored or constant patterns.
+    ((or 'nil 't '_ '_) nil)
+    ;; Keyword symbols are literal matches, not bindings.
+    ((and (pred symbolp) (pred keywordp)) nil)
+    ;; Plain symbol: a variable binding.
+    ((and (pred symbolp) sym)
+     (let ((name (symbol-name sym)))
+       (if (or (string-prefix-p "_" name)
+               (member sym pcase--dontcare-upats))
+           nil
+         (list sym))))
+    ;; Backquote pattern: the reader produces (\` TEMPLATE).
+    ;; Match as a two-element list whose car is the symbol \`.
+    ((and (pred consp)
+          (guard (eq (car pattern) '\`))
+          (guard (consp (cdr pattern))))
+     (let-completion--pcase-backquote-vars (cadr pattern)))
+    ;; (and PAT1 PAT2 ...) -- collect vars from all sub-patterns.
+    (`(and . ,pats)
+     (mapcan #'let-completion--pcase-pattern-vars pats))
+    ;; (or PAT1 PAT2 ...) -- all branches bind the same vars;
+    ;; extract from the first.
+    (`(or . ,pats)
+     (when pats
+       (let-completion--pcase-pattern-vars (car pats))))
+    ;; (let PAT EXPR) -- extract vars from PAT.
+    (`(let ,pat . ,_)
+     (let-completion--pcase-pattern-vars pat))
+    ;; (app FN PAT) -- extract vars from PAT.
+    (`(app ,_ ,pat)
+     (let-completion--pcase-pattern-vars pat))
+    ;; (cl-struct TYPE FIELD1 FIELD2 ...) -- each field is a variable.
+    (`(cl-struct ,_ . ,fields)
+     (cl-loop for f in fields
+              when (and (symbolp f) (not (eq f '_))
+                        (not (keywordp f)))
+              collect f))
+    ;; (map KEY ...) or (map (KEY VAR) ...) -- from map.el pcase pattern.
+    (`(,(or 'map 'map!) . ,keys)
+     (let-completion--pcase-map-vars keys))
+    ;; (pred ...) and (guard ...) bind nothing.
+    (`(pred . ,_) nil)
+    (`(guard . ,_) nil)
+    ;; Quoted literal: binds nothing.
+    (`(quote . ,_) nil)
+    ;; Vector pattern.
+    ((pred vectorp)
+     (cl-loop for elt across pattern
+              nconc (let-completion--pcase-pattern-vars elt)))
+    ;; Unknown list pattern: ignore.
+    (_ nil)))
+
+(defun let-completion--pcase-backquote-vars (template)
+  "Extract variable names from a backquote TEMPLATE.
+TEMPLATE is the structure inside a \\=`...\\=` pattern after the
+reader has processed the backquote.
+
+Comma-unquoted positions (produced by the reader as =\\,' forms)
+are sub-patterns.  Everything else is a literal match.
+
+Called by `let-completion--pcase-pattern-vars'."
+  (cond
+   ;; ,PAT or ,@PAT -- the reader produces (\, PAT) or (\,@ PAT).
+   ((and (consp template)
+         (memq (car template) '(\, \,@)))
+    (let-completion--pcase-pattern-vars (cadr template)))
+   ;; Cons cell: recurse into car and cdr.
+   ((consp template)
+    (nconc (let-completion--pcase-backquote-vars (car template))
+           (let-completion--pcase-backquote-vars (cdr template))))
+   ;; Vector inside backquote template.
+   ((vectorp template)
+    (cl-loop for elt across template
+             nconc (let-completion--pcase-backquote-vars elt)))
+   ;; Atom (number, string, symbol, nil): literal match, no binding.
+   (t nil)))
+
+(defun let-completion--pcase-map-vars (keys)
+  "Extract variable names from map pattern KEYS.
+Each element is either a symbol KEY (binds KEY), a keyword :KEY
+\(binds a symbol derived from KEY without the colon), or a list
+\(KEY VAR) or (KEY VAR DEFAULT) where VAR is the bound variable.
+
+Called by `let-completion--pcase-pattern-vars'."
+  (cl-loop for k in keys
+           nconc (cond
+                  ;; (KEY VAR) or (KEY VAR DEFAULT)
+                  ((and (consp k) (cdr k))
+                   (let ((var (cadr k)))
+                     (when (and (symbolp var) (not (eq var '_)))
+                       (list var))))
+                  ;; :keyword -- binds symbol without colon prefix
+                  ((keywordp k)
+                   (let ((name (substring (symbol-name k) 1)))
+                     (unless (string-empty-p name)
+                       (list (intern name)))))
+                  ;; Plain symbol
+                  ((and (symbolp k) (not (eq k '_))
+                        (not (eq k t)) (not (eq k nil)))
+                   (list k))
+                  (t nil))))
+
 
 ;;;; Shape Extractors
 
@@ -956,7 +1082,7 @@ Called by `let-completion--extract-shape'."
       (unless (or (string-empty-p name) (string= name "nil"))
         (list (list name tag nil))))))
 
-;;; Custom Extractor Functions
+;;;; Custom Extractor Functions
 
 (cl-defun let-completion--extract-flet (pos completion-pos tag)
   "Extract function names from a flet-like form at POS.
@@ -1265,6 +1391,165 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                                       (append entry (list name)))
                                     bindings)))
               (cons name-entry bindings))))))))
+
+(cl-defun let-completion--extract-pcase-let (pos completion-pos tag)
+  "Extract bindings from a `pcase-let' or `pcase-let*' form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Navigate past the head symbol to the binding list at index 1.
+Each entry is (PATTERN EXPR).  Read each entry via `read', walk
+the pattern with `let-completion--pcase-pattern-vars' to extract
+variable names.  Values are extracted via `read' from the EXPR
+position.  Scope requires COMPLETION-POS past the binding list.
+
+Return alist of (NAME-STRING TAG-STRING VALUE-OR-NIL) lists or nil.
+
+Used for `pcase-let', `pcase-let*'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (forward-comment (buffer-size))
+    ;; -- Navigate: skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (unless head-end (cl-return-from let-completion--extract-pcase-let))
+      (goto-char head-end)
+      (forward-comment (buffer-size))
+      ;; -- Navigate: now at binding list.
+      (let ((list-start (point))
+            (list-end (ignore-errors (scan-sexps (point) 1))))
+        (unless (and list-end
+                     (eq (char-after list-start) ?\()
+                     (> completion-pos list-end))
+          (cl-return-from let-completion--extract-pcase-let))
+        ;; -- Walk: iterate entries in binding list.
+        (goto-char (1+ list-start))
+        (let (result)
+          (while (progn (forward-comment (buffer-size))
+                        (< (point) (1- list-end)))
+            (let ((entry-start (point)))
+              (condition-case nil
+                  (let ((entry-end (scan-sexps (point) 1)))
+                    (if (<= entry-start completion-pos entry-end)
+                        (goto-char entry-end)
+                      (when (eq (char-after entry-start) ?\()
+                        ;; -- Entry: read the (PATTERN EXPR) form.
+                        (let ((entry (condition-case nil
+                                         (car (read-from-string
+                                               (buffer-substring-no-properties
+                                                entry-start entry-end)))
+                                       (error nil))))
+                          (when (and entry (consp entry))
+                            (let* ((pattern (car entry))
+                                   (value (cadr entry))
+                                   (vars (condition-case nil
+                                             (let-completion--pcase-pattern-vars
+                                              pattern)
+                                           (error nil))))
+                              (dolist (var vars)
+                                (push (list (symbol-name var) tag value)
+                                      result))))))
+                      (goto-char entry-end)))
+                (error (goto-char list-end)))))
+          result)))))
+
+(cl-defun let-completion--extract-pcase-dolist (pos completion-pos tag)
+  "Extract bindings from a `pcase-dolist' form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Navigate past the head symbol to the spec at index 1, which has
+the structure (PATTERN LIST).  Read the spec, extract variables
+from PATTERN.  Scope requires COMPLETION-POS past the spec.
+
+Return alist of (NAME-STRING TAG-STRING nil) lists or nil.
+
+Used for `pcase-dolist'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (forward-comment (buffer-size))
+    ;; -- Navigate: skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (unless head-end (cl-return-from let-completion--extract-pcase-dolist))
+      (goto-char head-end)
+      (forward-comment (buffer-size))
+      ;; -- Navigate: read the (PATTERN LIST) spec.
+      (let ((spec-start (point))
+            (spec-end (ignore-errors (scan-sexps (point) 1))))
+        (unless (and spec-end
+                     (eq (char-after spec-start) ?\()
+                     (> completion-pos spec-end))
+          (cl-return-from let-completion--extract-pcase-dolist))
+        ;; -- Read: parse spec and extract pattern.
+        (let ((spec (condition-case nil
+                        (car (read-from-string
+                              (buffer-substring-no-properties
+                               spec-start spec-end)))
+                      (error nil))))
+          (when (and spec (consp spec))
+            (let ((vars (condition-case nil
+                            (let-completion--pcase-pattern-vars (car spec))
+                          (error nil))))
+              (mapcar (lambda (var)
+                        (list (symbol-name var) tag nil))
+                      vars))))))))
+
+(cl-defun let-completion--extract-pcase-lambda (pos completion-pos tag)
+  "Extract bindings from a `pcase-lambda' form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Navigate past the head symbol to the arglist at index 1.  Each
+element is either a plain symbol (collected as-is) or a pcase
+pattern (walked for variables).  Scope requires COMPLETION-POS
+past the arglist.
+
+Return alist of (NAME-STRING TAG-STRING nil) lists or nil.
+
+Used for `pcase-lambda'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (forward-comment (buffer-size))
+    ;; -- Navigate: skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (unless head-end (cl-return-from let-completion--extract-pcase-lambda))
+      (goto-char head-end)
+      (forward-comment (buffer-size))
+      ;; -- Navigate: read arglist.
+      (let ((arglist-start (point))
+            (arglist-end (ignore-errors (scan-sexps (point) 1))))
+        (unless (and arglist-end
+                     (eq (char-after arglist-start) ?\()
+                     (> completion-pos arglist-end))
+          (cl-return-from let-completion--extract-pcase-lambda))
+        ;; -- Read: parse arglist.
+        (let ((arglist (condition-case nil
+                           (car (read-from-string
+                                 (buffer-substring-no-properties
+                                  arglist-start arglist-end)))
+                         (error nil))))
+          (when (listp arglist)
+            (let (result)
+              (dolist (arg arglist)
+                (cond
+                 ;; Lambda-list keyword: skip.
+                 ((and (symbolp arg) (string-prefix-p "&" (symbol-name arg)))
+                  nil)
+                 ;; Plain symbol: collect directly.
+                 ((and (symbolp arg) (not (memq arg '(_ t nil)))
+                       (not (keywordp arg)))
+                  (push (list (symbol-name arg) tag nil) result))
+                 ;; Pattern: extract variables.
+                 (t
+                  (let ((vars (condition-case nil
+                                  (let-completion--pcase-pattern-vars arg)
+                                (error nil))))
+                    (dolist (var vars)
+                      (push (list (symbol-name var) tag nil) result))))))
+              result)))))))
+
 
 ;;;; Dispatcher
 
