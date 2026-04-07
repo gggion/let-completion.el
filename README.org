@@ -1273,6 +1273,7 @@ When looking at a macro's binding site, ask yourself:
 | ~pcase-let*~                     | core     | custom    |       |          | pcase-let*       | done   | extract-pcase-let*   |
 | ~pcase-dolist~                   | core     | custom    |       |          | pcase-dolist     | done   | extract-pcase-dolist |
 | ~pcase-lambda~                   | core     | custom    |       |          | pcase-λ          | done   | extract-pcase-lambda |
+| ~map-let~                        | core     | custom    |       |          | map-let          | done   | extract-map-let |
 
 
 - Deferred (core forms needing custom extractors) :: I'm leaving these for last,

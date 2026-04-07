@@ -603,6 +603,8 @@ Return SPEC or nil."
   '(:extractor let-completion--extract-pcase-dolist :tag "pcase-dolist"))
 (let-completion-register-binding-form 'pcase-lambda
   '(:extractor let-completion--extract-pcase-lambda :tag "pcase-λ"))
+(let-completion-register-binding-form 'map-let
+  '(:extractor let-completion--extract-map-let :tag "map-let"))
 
 
 ;;;; Scope Checking
@@ -1550,6 +1552,51 @@ Called by `let-completion--extract-bindings-at' via `:extractor'."
                       (push (list (symbol-name var) tag nil) result))))))
               result)))))))
 
+(cl-defun let-completion--extract-map-let (pos completion-pos tag)
+  "Extract bindings from a `map-let' form at POS.
+COMPLETION-POS is point.  TAG is the annotation label from the
+registry descriptor.
+
+Navigate past the head symbol to KEYS (index 1), then past MAP
+\(index 2).  Scope requires COMPLETION-POS past MAP.  Read KEYS
+via `read', extract variable names using
+`let-completion--pcase-map-vars'.
+
+Return alist of (NAME-STRING TAG-STRING nil) lists or nil.
+
+Used for `map-let'.
+Called by `let-completion--extract-bindings-at' via `:extractor'."
+  (save-excursion
+    (goto-char (1+ pos))
+    (forward-comment (buffer-size))
+    ;; -- Navigate: skip head symbol.
+    (let ((head-end (ignore-errors (scan-sexps (point) 1))))
+      (unless head-end (cl-return-from let-completion--extract-map-let))
+      (goto-char head-end)
+      (forward-comment (buffer-size))
+      ;; -- Navigate: read KEYS boundaries.
+      (let ((keys-start (point))
+            (keys-end (ignore-errors (scan-sexps (point) 1))))
+        (unless keys-end (cl-return-from let-completion--extract-map-let))
+        (goto-char keys-end)
+        (forward-comment (buffer-size))
+        ;; -- Navigate: skip MAP, check scope.
+        (let ((map-end (ignore-errors (scan-sexps (point) 1))))
+          (unless (and map-end (> completion-pos map-end))
+            (cl-return-from let-completion--extract-map-let))
+          ;; -- Read: parse KEYS and extract variable names.
+          (let ((keys (condition-case nil
+                          (car (read-from-string
+                                (buffer-substring-no-properties
+                                 keys-start keys-end)))
+                        (error nil))))
+            (when (listp keys)
+              (let ((vars (condition-case nil
+                              (let-completion--pcase-map-vars keys)
+                            (error nil))))
+                (mapcar (lambda (var)
+                          (list (symbol-name var) tag nil))
+                        vars)))))))))
 
 ;;;; Dispatcher
 
